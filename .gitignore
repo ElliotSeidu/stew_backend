@@ -1,0 +1,43 @@
+# ============================================================
+# STEW Backend — .gitignore
+# ============================================================
+
+# Environment secrets — NEVER commit these
+.env
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Django artefacts
+db.sqlite3
+*.sqlite3
+staticfiles/
+media/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
