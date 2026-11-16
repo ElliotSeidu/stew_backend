@@ -405,3 +405,367 @@ class PaymentWebhookIdempotencyTest(TestCase):
         self.assertEqual(self.order.payment_status, 'pending')
 
 
+
+
+class AdminPermissionNarrowingRegressionTest(TestCase):
+    """
+    Regression tests for the admin-check consolidation refactor.
+
+    The refactor replaced inline `user.is_admin` / `user.is_admin or user.role == 'admin'`
+    checks with `_is_admin_user(user)`, which ALSO passes for `is_staff=True` and
+    `account_type='admin'`. That violated the no-behavior-change rule.
+
+    This suite proves that at every affected view, a user with ONLY `is_staff=True`
+    or ONLY `account_type='admin'` is denied in exactly the same way a regular
+    student would be.
+
+    Original inline checks (now restored):
+      meal_detail_view       line 732  : request.user.is_admin
+      orders_view GET        line 863  : user.is_admin or user.role == 'admin'
+      cancel_order_view perm line 1031 : user.is_admin
+      cancel_order_view time line 1040 : user.is_admin or is_order_vendor
+      payouts_ledger_view    line 1288 : user.is_admin
+                             line 1292 : user.is_admin
+      mark_collected_view    line 1513 : _collector.is_admin
+      support_cases_view GET line 1816 : user.is_admin
+      admin_user_detail_view line 1938 : target.is_admin or target.role == 'admin'
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # --- quasi-admin imposters ---
+        # staff_only: Django staff flag set, but NOT is_admin, NOT role='admin'
+        cls.staff_only = User.objects.create_user(
+            email='staff.only@st.knust.edu.gh',
+            password='Password123',
+            full_name='Staff Only',
+            reference_id='20888001',
+            phone='0249000091',
+            hall='Unity Hall (Conti)',
+            verified=True,
+            role='customer',
+            account_type='customer',
+            is_staff=True,
+            is_admin=False,
+        )
+        cls.staff_token = generate_jwt_token(cls.staff_only)
+
+        # acct_type_only: account_type='admin', but NOT is_admin, NOT is_staff, NOT role='admin'
+        cls.acct_type_only = User.objects.create_user(
+            email='accttype.only@st.knust.edu.gh',
+            password='Password123',
+            full_name='AcctType Only',
+            reference_id='20888002',
+            phone='0249000092',
+            hall='Unity Hall (Conti)',
+            verified=True,
+            role='customer',
+            account_type='admin',
+            is_staff=False,
+            is_admin=False,
+        )
+        cls.acct_token = generate_jwt_token(cls.acct_type_only)
+
+        # real admin for endpoints that need a legitimate admin caller
+        cls.real_admin = User.objects.create_superuser(
+            email='real.admin.narrow@st.knust.edu.gh',
+            password='AdminPassword123',
+            full_name='Real Admin Narrow',
+        )
+        cls.admin_token = generate_jwt_token(cls.real_admin)
+
+        # vendor + meal owned by a third party (not by any imposter)
+        cls.vendor_user = _make_student('narrow.vendor@st.knust.edu.gh', ref='20888010', role='vendor')
+        cls.vendor = _make_vendor(cls.vendor_user, vid='v_narrow1', name='Narrow Kitchen')
+        cls.meal = _make_meal(cls.vendor, mid='m_narrow1')
+
+        # an order owned by vendor_user (imposters are unrelated third parties)
+        cls.third_party_order = _make_paid_order(
+            cls.vendor_user, cls.vendor, cls.meal,
+            oid='STW-NRWTP1', subtotal=40.0,
+        )
+
+        # a support case filed by vendor_user
+        cls.third_party_case = SupportCase.objects.create(
+            code='CASE-NRW1',
+            user=cls.vendor_user,
+            type='wrong_item',
+            order=cls.third_party_order.id,
+            priority='normal',
+            note='Third-party case.',
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    # ------------------------------------------------------------------
+    # Site 1: meal_detail_view — original: request.user.is_admin
+    # An imposter trying to edit another vendor's meal must get 403.
+    # ------------------------------------------------------------------
+    def _assert_meal_edit_denied(self, token, label):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        res = self.client.patch(
+            f'/api/meals/{self.meal.id}/',
+            {'name': 'Hacked Name'},
+            format='json',
+        )
+        self.assertEqual(
+            res.status_code, 403,
+            f'{label} could edit another vendor\'s meal (expected 403, got {res.status_code})',
+        )
+
+    def test_staff_only_cannot_edit_another_vendors_meal(self):
+        """is_staff-only user must not bypass meal ownership check (original: is_admin)."""
+        self._assert_meal_edit_denied(self.staff_token, 'staff_only')
+
+    def test_acct_type_only_cannot_edit_another_vendors_meal(self):
+        """account_type='admin'-only user must not bypass meal ownership check."""
+        self._assert_meal_edit_denied(self.acct_token, 'acct_type_only')
+
+    # ------------------------------------------------------------------
+    # Site 2: orders_view GET — original: user.is_admin or user.role == 'admin'
+    # Imposters must NOT receive all orders; they should only see their own.
+    # The third-party order (owned by vendor_user) must NOT appear in
+    # the imposter's order list.
+    # ------------------------------------------------------------------
+    def _assert_cannot_see_all_orders(self, token, label):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        res = self.client.get('/api/orders/', {'scope': 'customer'})
+        self.assertEqual(res.status_code, 200)
+        ids = [o.get('id') for o in (res.data or [])]
+        self.assertNotIn(
+            self.third_party_order.id, ids,
+            f'{label} could see another user\'s order in the list',
+        )
+
+    def test_staff_only_cannot_see_all_orders(self):
+        """is_staff-only user must not receive other users' orders."""
+        self._assert_cannot_see_all_orders(self.staff_token, 'staff_only')
+
+    def test_acct_type_only_cannot_see_all_orders(self):
+        """account_type='admin'-only user must not receive other users' orders."""
+        self._assert_cannot_see_all_orders(self.acct_token, 'acct_type_only')
+
+    # ------------------------------------------------------------------
+    # Site 3: cancel_order_view — original: user.is_admin (non-owner/non-vendor)
+    # An unrelated imposter cancelling a third-party order must get 403.
+    # ------------------------------------------------------------------
+    def _assert_cancel_third_party_order_denied(self, token, label):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        res = self.client.post(
+            f'/api/orders/{self.third_party_order.id}/cancel/',
+            format='json',
+        )
+        self.assertEqual(
+            res.status_code, 403,
+            f'{label} could cancel another user\'s order (expected 403, got {res.status_code})',
+        )
+
+    def test_staff_only_cannot_cancel_third_party_order(self):
+        """is_staff-only non-owner/non-vendor must be denied cancel (original: is_admin)."""
+        self._assert_cancel_third_party_order_denied(self.staff_token, 'staff_only')
+
+    def test_acct_type_only_cannot_cancel_third_party_order(self):
+        """account_type='admin'-only non-owner must be denied cancel."""
+        self._assert_cancel_third_party_order_denied(self.acct_token, 'acct_type_only')
+
+    # ------------------------------------------------------------------
+    # Site 4: cancel_order_view time-window bypass
+    # original: is_owner and not (user.is_admin or is_order_vendor)
+    # An owner who is ONLY is_staff/account_type must NOT bypass the
+    # time-window / prep-stage guard — they should get 400 "kitchen has started"
+    # when prep_stage != 'accepted', not silently succeed.
+    # ------------------------------------------------------------------
+    def _make_in_progress_order_for(self, owner, oid, ref):
+        return Order.objects.create(
+            id=oid,
+            customer=owner,
+            customer_name=owner.full_name,
+            email=owner.email,
+            phone='0249000099',
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'price': 40.0, 'qty': 1}],
+            subtotal=40.0,
+            fee=2.0,
+            total=42.0,
+            handoff_code='999888',
+            prep_stage='preparing',       # past 'accepted' — cannot cancel as student
+            prep_at={'accepted': 1700000000000},
+            payment_status='pending',
+            payment_provider='paystack',
+            payment_reference=ref,
+            settlement_status='pending',
+            messages=[],
+        )
+
+    def test_staff_only_owner_cannot_bypass_cancel_time_window(self):
+        """is_staff-only owner must still hit the prep-stage guard (original: is_admin bypasses it)."""
+        order = self._make_in_progress_order_for(
+            self.staff_only, 'STW-NRWCNL1', 'PSK-NRWCNL1',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.staff_token}')
+        res = self.client.post(f'/api/orders/{order.id}/cancel/', format='json')
+        # Must be rejected — kitchen already started
+        self.assertEqual(
+            res.status_code, 400,
+            f'staff_only owner bypassed prep-stage guard (got {res.status_code})',
+        )
+        self.assertIn('kitchen', res.data.get('message', '').lower())
+
+    def test_acct_type_only_owner_cannot_bypass_cancel_time_window(self):
+        """account_type='admin'-only owner must still hit the prep-stage guard."""
+        order = self._make_in_progress_order_for(
+            self.acct_type_only, 'STW-NRWCNL2', 'PSK-NRWCNL2',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.acct_token}')
+        res = self.client.post(f'/api/orders/{order.id}/cancel/', format='json')
+        self.assertEqual(
+            res.status_code, 400,
+            f'acct_type_only owner bypassed prep-stage guard (got {res.status_code})',
+        )
+        self.assertIn('kitchen', res.data.get('message', '').lower())
+
+    # ------------------------------------------------------------------
+    # Site 5 & 6: payouts_ledger_view — original body checks: user.is_admin
+    #
+    # IsVendorUser (pre-existing, unchanged) already admits account_type='admin'
+    # so acct_type_only reaches the view body and gets 200 with an empty ledger
+    # (the body's `not user.is_admin` guard restricts it to its own vendor,
+    # which is None → returns zeroed response). staff_only has role='customer'
+    # and account_type='customer' so IsVendorUser gates it out at 403.
+    #
+    # In both cases the user does NOT receive the full all-vendor ledger that a
+    # real admin (is_admin=True) would see. That is the invariant we assert.
+    # ------------------------------------------------------------------
+    def _assert_ledger_not_all_vendors(self, token, label):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        res = self.client.get('/api/payouts/')
+        # Either denied outright (403) or gets an empty/zero ledger (200)
+        self.assertIn(
+            res.status_code, (200, 403),
+            f'{label}: unexpected status {res.status_code}',
+        )
+        if res.status_code == 200:
+            # Must not see the third-party vendor's held funds
+            self.assertEqual(
+                res.data.get('held', 0), 0,
+                f'{label} saw non-zero held funds — may have all-vendor access',
+            )
+            self.assertEqual(
+                res.data.get('released', 0), 0,
+                f'{label} saw non-zero released funds — may have all-vendor access',
+            )
+
+    def test_staff_only_ledger_not_all_vendors(self):
+        """is_staff-only cannot see all vendors' ledger data."""
+        # staff_only has role=customer, account_type=customer → IsVendorUser gates to 403
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.staff_token}')
+        res = self.client.get('/api/payouts/')
+        self.assertEqual(res.status_code, 403,
+                         f'staff_only (role=customer) should be denied by IsVendorUser, got {res.status_code}')
+
+    def test_acct_type_only_ledger_not_all_vendors(self):
+        """account_type='admin' passes IsVendorUser but body guard restricts to own (None) vendor → empty ledger."""
+        # acct_type_only admitted by IsVendorUser (account_type='admin' is in its allow-list)
+        # but view body `not user.is_admin` → filters to vendor=None → zeroed response
+        self._assert_ledger_not_all_vendors(self.acct_token, 'acct_type_only')
+
+    # ------------------------------------------------------------------
+    # Site 7: mark_collected_view — original: _collector.is_admin
+    # An unrelated imposter confirming collection on a third-party order
+    # must get 403.
+    # ------------------------------------------------------------------
+    def _assert_collect_denied(self, token, label):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        res = self.client.post(
+            f'/api/orders/{self.third_party_order.id}/collected/',
+            format='json',
+        )
+        self.assertEqual(
+            res.status_code, 403,
+            f'{label} could confirm collection on another user\'s order (got {res.status_code})',
+        )
+
+    def test_staff_only_cannot_confirm_third_party_collection(self):
+        """is_staff-only non-owner must be denied collection confirmation."""
+        self._assert_collect_denied(self.staff_token, 'staff_only')
+
+    def test_acct_type_only_cannot_confirm_third_party_collection(self):
+        """account_type='admin'-only non-owner must be denied collection confirmation."""
+        self._assert_collect_denied(self.acct_token, 'acct_type_only')
+
+    # ------------------------------------------------------------------
+    # Site 8: support_cases_view GET — original: user.is_admin
+    # Imposters must only see their OWN cases, not all cases.
+    # The third-party case (filed by vendor_user) must NOT appear.
+    # ------------------------------------------------------------------
+    def _assert_cannot_see_all_cases(self, token, label):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        res = self.client.get('/api/support/cases/')
+        self.assertEqual(res.status_code, 200)
+        codes = [c.get('code') for c in (res.data or [])]
+        self.assertNotIn(
+            self.third_party_case.code, codes,
+            f'{label} could see another user\'s support case',
+        )
+
+    def test_staff_only_cannot_see_all_support_cases(self):
+        """is_staff-only user must only see their own support cases."""
+        self._assert_cannot_see_all_cases(self.staff_token, 'staff_only')
+
+    def test_acct_type_only_cannot_see_all_support_cases(self):
+        """account_type='admin'-only user must only see their own support cases."""
+        self._assert_cannot_see_all_cases(self.acct_token, 'acct_type_only')
+
+    # ------------------------------------------------------------------
+    # Site 9: admin_user_detail_view target guard
+    # original: target.is_admin or target.role == 'admin'
+    # Targets with ONLY is_staff=True or ONLY account_type='admin' must
+    # NOT be shielded from suspension — only targets with is_admin=True
+    # or role='admin' are protected.
+    # ------------------------------------------------------------------
+    def test_staff_only_target_is_not_shielded_from_suspension(self):
+        """
+        A target with is_staff=True (but is_admin=False, role='customer') must
+        NOT trigger the 'Admin accounts cannot be suspended' guard.
+        The real admin must be able to toggle the user's active status.
+        """
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        res = self.client.patch(
+            f'/api/admin/users/{self.staff_only.pk}/',
+            {'active': False},
+            format='json',
+        )
+        # Must NOT return 400 "Admin accounts cannot be suspended"
+        self.assertNotEqual(
+            res.status_code, 400,
+            'staff_only target was wrongly shielded from suspension by is_staff flag',
+        )
+        self.assertEqual(
+            res.status_code, 200,
+            f'Unexpected status suspending staff_only target: {res.status_code} {res.data}',
+        )
+
+    def test_acct_type_only_target_is_not_shielded_from_suspension(self):
+        """
+        A target with account_type='admin' (but is_admin=False, role='customer') must
+        NOT trigger the guard. Only is_admin=True or role='admin' are protected.
+        """
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        res = self.client.patch(
+            f'/api/admin/users/{self.acct_type_only.pk}/',
+            {'active': False},
+            format='json',
+        )
+        self.assertNotEqual(
+            res.status_code, 400,
+            'acct_type_only target was wrongly shielded from suspension by account_type flag',
+        )
+        self.assertEqual(
+            res.status_code, 200,
+            f'Unexpected status suspending acct_type_only target: {res.status_code} {res.data}',
+        )
+
