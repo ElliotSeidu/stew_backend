@@ -729,7 +729,7 @@ def meal_detail_view(request, pk):
         return Response({'message': 'Meal not found'}, status=status.HTTP_404_NOT_FOUND)
 
     # Permission check: must belong to user's vendor unless admin
-    if not request.user.is_admin and meal.vendor.user != request.user:
+    if not _is_admin_user(request.user) and meal.vendor.user != request.user:
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'DELETE':
@@ -860,7 +860,7 @@ def orders_view(request):
 
     if request.method == 'GET':
         scope = request.query_params.get('scope', '').strip().lower()
-        if user.is_admin or user.role == 'admin':
+        if _is_admin_user(user):
             orders = Order.objects.select_related('vendor', 'customer').all().order_by('-created_at')
         elif scope == 'vendor' and (user.is_vendor or user.role in ['vendor', 'both']):
             orders = Order.objects.select_related('vendor', 'customer').filter(vendor__user=user).order_by('-created_at')
@@ -1028,7 +1028,7 @@ def cancel_order_view(request, pk):
     user = request.user
     is_owner = (order.customer == user or order.email == user.email)
     is_order_vendor = (order.vendor and order.vendor.user == user)
-    if not (is_owner or is_order_vendor or user.is_admin):
+    if not (is_owner or is_order_vendor or _is_admin_user(user)):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     if order.cancelled_at:
@@ -1037,7 +1037,7 @@ def cancel_order_view(request, pk):
         return Response({'message': 'This order was already handed over and cannot be cancelled. Open a support case instead.'}, status=status.HTTP_400_BAD_REQUEST)
 
     # If student, enforce time window and prep stage
-    if is_owner and not (user.is_admin or is_order_vendor):
+    if is_owner and not (_is_admin_user(user) or is_order_vendor):
         if order.prep_stage != 'accepted':
             return Response({'message': 'The kitchen has already started on this order.'}, status=status.HTTP_400_BAD_REQUEST)
         elapsed_seconds = (dj_timezone.now() - order.created_at).total_seconds()
@@ -1285,11 +1285,11 @@ def payouts_ledger_view(request):
     """
     user = request.user
     vendor = Vendor.objects.filter(user=user).first()
-    if not vendor and not user.is_admin:
+    if not vendor and not _is_admin_user(user):
         return Response({'held': 0, 'released': 0, 'heldCount': 0, 'releasedCount': 0, 'collected': 0, 'fees': 0})
 
     orders_query = Order.objects.filter(cancelled_at__isnull=True)
-    if not user.is_admin:
+    if not _is_admin_user(user):
         orders_query = orders_query.filter(vendor=vendor)
 
     paid_qs = orders_query.filter(payment_status__in=['paid', 'released'])
@@ -1510,7 +1510,7 @@ def mark_collected_view(request, pk):
 
     # IDOR protection: only the order's customer (or admin) may confirm collection
     _collector = request.user
-    if order.customer != _collector and order.email != _collector.email and not _collector.is_admin:
+    if order.customer != _collector and order.email != _collector.email and not _is_admin_user(_collector):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     if order.cancelled_at:
@@ -1813,7 +1813,7 @@ def support_cases_view(request):
     """Customer or Admin support tickets."""
     user = request.user
     if request.method == 'GET':
-        if user.is_admin:
+        if _is_admin_user(user):
             cases = SupportCase.objects.all().order_by('-created_at')
         else:
             cases = SupportCase.objects.filter(user=user).order_by('-created_at')
@@ -1935,7 +1935,7 @@ def admin_user_detail_view(request, pk):
     except User.DoesNotExist:
         return Response({'message': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-    if target.is_admin or target.role == 'admin':
+    if _is_admin_user(target):
         return Response({'message': 'Admin accounts cannot be suspended from the dashboard.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if 'active' in request.data:
@@ -2001,3 +2001,4 @@ def analytics_event_view(request):
     }
     AnalyticsEvent.objects.create(event=event, payload=safe_payload)
     return Response({'ok': True})
+
