@@ -1,23 +1,26 @@
+import hmac
+import hashlib
 import json
 import logging
 import requests as http_requests
 import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import models, transaction
+from django.db.models import Avg, Count, Sum, Min, Max, Q, Exists, OuterRef
 from django.utils import timezone as dj_timezone
 from django.utils.html import strip_tags
 from rest_framework import status
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 
 
 def escape(value) -> str:
     """Strips HTML tags and angle brackets while preserving normal punctuation (e.g. apostrophes) for JSON responses."""
     return strip_tags(str(value or '')).replace('<', '').replace('>', '')
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
 
 from api.authentication import JWTAuthentication, IsStudentUser, IsVendorUser, IsAdminUser
 from api.models import (
@@ -551,38 +554,49 @@ def me_view(request):
         if new_email != user.email:
             return Response({'errors': {'email': 'Your KNUST email cannot be changed here. Contact support.'}}, status=status.HTTP_400_BAD_REQUEST)
 
+    changed_fields = []
     if 'fullName' in data:
         name = escape(str(data['fullName']).strip())[:150]
         if len(name) < 3:
             return Response({'errors': {'fullName': 'Enter your full name.'}}, status=status.HTTP_400_BAD_REQUEST)
         user.full_name = name
+        changed_fields.append('full_name')
     if 'area' in data or 'hall' in data:
         user.hall = escape(str(data.get('area') or data.get('hall') or '').strip())[:100]
+        changed_fields.append('hall')
     if 'phone' in data:
         user.phone = validate_ghana_phone(data['phone'])
+        changed_fields.append('phone')
     if 'kitchenName' in data:
         user.kitchen_name = escape(str(data['kitchenName']).strip())[:150]
+        changed_fields.append('kitchen_name')
     if 'sells' in data and isinstance(data['sells'], list):
         user.sells = [escape(str(s).strip())[:60] for s in data['sells'][:20] if str(s).strip()]
+        changed_fields.append('sells')
     if 'bio' in data:
         user.bio = escape(str(data['bio']).strip()[:500])
+        changed_fields.append('bio')
     if 'prep' in data:
         try:
             prep_val = int(data['prep'])
             if not (1 <= prep_val <= 240):
                 return Response({'errors': {'prep': 'Prep time must be between 1 and 240.'}}, status=status.HTTP_400_BAD_REQUEST)
             user.prep = prep_val
+            changed_fields.append('prep')
         except (ValueError, TypeError):
             return Response({'errors': {'prep': 'Prep time must be a number.'}}, status=status.HTTP_400_BAD_REQUEST)
     if 'payout' in data:
         user.payout = validate_ghana_phone(data['payout'])
+        changed_fields.append('payout')
     if 'logo' in data:
         try:
             user.logo = _sanitize_media_url(data.get('logo'), max_len=300000)
+            changed_fields.append('logo')
         except ValidationError as e:
             return Response({'errors': {'logo': str(e.detail[0] if isinstance(e.detail, list) else e.detail)}}, status=status.HTTP_400_BAD_REQUEST)
 
-    user.save()
+    if changed_fields:
+        user.save(update_fields=changed_fields)
 
     # Keep Vendor record synchronized when a vendor updates their kitchen profile
     if user.is_vendor or user.role == 'vendor' or user.account_type in ('vendor', 'both'):
@@ -610,7 +624,7 @@ def me_view(request):
 def delete_account_view(request):
     """Permanently deletes student or vendor account (admin cannot be deleted)."""
     user = request.user
-    if user.is_admin or user.role == 'admin' or user.email.lower().startswith('admin@'):
+    if _is_admin_user(user) or user.email.lower().startswith('admin@'):
         return Response({'message': 'Admin accounts cannot be deleted.'}, status=status.HTTP_400_BAD_REQUEST)
 
     user_email = user.email
@@ -657,9 +671,9 @@ def meals_list_view(request):
             if not auth_res:
                 return Response({'message': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
             user, _ = auth_res
-            meals = Meal.objects.filter(vendor__user=user).order_by('-created_at')
+            meals = Meal.objects.select_related('vendor').filter(vendor__user=user).order_by('-created_at')
             return Response(MealSerializer(meals, many=True).data)
-        meals = Meal.objects.filter(on=True, vendor__active=True)
+        meals = Meal.objects.select_related('vendor').filter(on=True, vendor__active=True)
         return Response(MealSerializer(meals, many=True).data)
 
     # Adding a meal requires vendor authentication
@@ -847,22 +861,24 @@ def orders_view(request):
     if request.method == 'GET':
         scope = request.query_params.get('scope', '').strip().lower()
         if user.is_admin or user.role == 'admin':
-            orders = Order.objects.all().order_by('-created_at')
+            orders = Order.objects.select_related('vendor', 'customer').all().order_by('-created_at')
         elif scope == 'vendor' and (user.is_vendor or user.role in ['vendor', 'both']):
-            orders = Order.objects.filter(vendor__user=user).order_by('-created_at')
+            orders = Order.objects.select_related('vendor', 'customer').filter(vendor__user=user).order_by('-created_at')
         elif scope == 'customer':
-            orders = Order.objects.filter(
+            orders = Order.objects.select_related('vendor', 'customer').filter(
                 models.Q(customer=user) | models.Q(email=user.email)
             ).order_by('-created_at')
         elif user.is_vendor or user.role in ['vendor', 'both']:
             # Vendors see both orders for their kitchen and personal customer orders
-            orders = Order.objects.filter(
+            orders = Order.objects.select_related('vendor', 'customer').filter(
                 models.Q(vendor__user=user) | models.Q(customer=user) | models.Q(email=user.email)
             ).distinct().order_by('-created_at')
         else:
-            orders = Order.objects.filter(
+            orders = Order.objects.select_related('vendor', 'customer').filter(
                 models.Q(customer=user) | models.Q(email=user.email)
             ).order_by('-created_at')
+        # Annotate whether each order has a review to avoid N+1 queries in OrderSerializer.get_reviewed
+        orders = orders.annotate(_has_review=Exists(Review.objects.filter(order_id=OuterRef('pk'))))
         return Response(OrderSerializer(orders, many=True, context={'request': request}).data)
 
     # POST: Place order
@@ -983,14 +999,14 @@ def order_detail_view(request, pk):
     Protected against IDOR: Only customer, assigned vendor, or admin can access.
     """
     try:
-        order = Order.objects.get(id=pk)
+        order = Order.objects.select_related('vendor', 'customer').get(id=pk)
     except Order.DoesNotExist:
         return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
     user = request.user
     is_owner = (order.customer == user or order.email == user.email)
     is_order_vendor = (order.vendor and order.vendor.user == user)
-    if not (is_owner or is_order_vendor or user.is_admin or user.role == 'admin'):
+    if not (is_owner or is_order_vendor or _is_admin_user(user)):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     return Response(OrderSerializer(order, context={'request': request}).data)
@@ -1233,8 +1249,6 @@ def paystack_webhook_view(request):
     browser mid-payment (common with MoMo approvals). Authenticity is proven by the
     HMAC-SHA512 signature of the raw body using our secret key.
     """
-    import hmac
-    import hashlib
     secret_key = getattr(settings, 'PAYSTACK_SECRET_KEY', '')
     signature = request.headers.get('X-Paystack-Signature', '')
     if not secret_key or not signature:
@@ -1278,21 +1292,32 @@ def payouts_ledger_view(request):
     if not user.is_admin:
         orders_query = orders_query.filter(vendor=vendor)
 
-    paid_orders = orders_query.filter(payment_status__in=['paid', 'released'])
-    released = [o for o in paid_orders if o.settlement_status == 'released']
-    held = [o for o in paid_orders if o.payment_status == 'paid' and o.settlement_status != 'released']
+    paid_qs = orders_query.filter(payment_status__in=['paid', 'released'])
+    agg = paid_qs.aggregate(
+        held_sum=Sum('subtotal', filter=Q(payment_status='paid', settlement_status__ne='released') if False else None),
+        released_sum=Sum('subtotal', filter=Q(settlement_status='released')),
+        fees_sum=Sum('fee'),
+        total_collected=Sum('total'),
+        held_count=Count('id', filter=Q(payment_status='paid', settlement_status__ne='released') if False else None),
+        released_count=Count('id', filter=Q(settlement_status='released')),
+    )
 
-    held_sum = sum(o.subtotal for o in held)
-    released_sum = sum(o.subtotal for o in released)
-    fees_sum = sum(o.fee for o in paid_orders)
+    # Django doesn't support __ne; use two separate aggregates for clarity
+    held_agg = paid_qs.filter(payment_status='paid').exclude(settlement_status='released').aggregate(
+        held_sum=Sum('subtotal'), held_count=Count('id')
+    )
+    released_agg = paid_qs.filter(settlement_status='released').aggregate(
+        released_sum=Sum('subtotal'), released_count=Count('id')
+    )
+    fees_agg = paid_qs.aggregate(fees_sum=Sum('fee'), total_collected=Sum('total'))
 
     return Response({
-        'held': round(held_sum, 2),
-        'released': round(released_sum, 2),
-        'heldCount': len(held),
-        'releasedCount': len(released),
-        'collected': round(sum(o.total for o in paid_orders), 2),
-        'fees': round(fees_sum, 2),
+        'held': round(held_agg['held_sum'] or 0, 2),
+        'released': round(released_agg['released_sum'] or 0, 2),
+        'heldCount': held_agg['held_count'] or 0,
+        'releasedCount': released_agg['released_count'] or 0,
+        'collected': round(fees_agg['total_collected'] or 0, 2),
+        'fees': round(fees_agg['fees_sum'] or 0, 2),
         'note': "STEW holds each payment until the student confirms collection, then releases it to you. You keep the full menu price; the 5% fee is added to the student's total."
     })
 
@@ -1300,6 +1325,33 @@ def payouts_ledger_view(request):
 # ============================================================================
 # MEETUP & HANDOVER ESCROW CONFIRMATION
 # ============================================================================
+
+def _release_escrow(order, collected_via: str, actor_email: str) -> None:
+    """Marks an order as collected and releases its escrow payment to the vendor.
+
+    Called by both student-confirmation and handoff-code paths. Idempotent if
+    ``order.collected_at`` is already set (callers check before calling).
+    """
+    now = dj_timezone.now()
+    now_ms = int(now.timestamp() * 1000)
+    prep_at = order.prep_at or {}
+    prep_at['collected'] = now_ms
+    with transaction.atomic():
+        order.collected_at = now
+        order.collected_via = collected_via
+        order.prep_stage = 'collected'
+        order.prep_at = prep_at
+        order.settlement_status = 'released'
+        order.settlement_released_at = now
+        order.settlement_net = order.subtotal
+        order.payment_status = 'released'
+        order.save(update_fields=[
+            'collected_at', 'collected_via', 'prep_stage', 'prep_at',
+            'settlement_status', 'settlement_released_at', 'settlement_net',
+            'payment_status',
+        ])
+        audit_action = 'collection_confirmed' if collected_via == 'student_confirmed' else 'handoff_code_verified'
+        record_audit(actor_email, audit_action, 'order', order.id, {'collectedVia': collected_via})
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
@@ -1469,24 +1521,7 @@ def mark_collected_view(request, pk):
     if order.collected_at:
         return Response(OrderSerializer(order, context={'request': request}).data)
 
-    now = dj_timezone.now()
-    now_ms = int(now.timestamp() * 1000)
-    prep_at = order.prep_at or {}
-    prep_at['collected'] = now_ms
-
-    with transaction.atomic():
-        order.collected_at = now
-        order.collected_via = 'student_confirmed'
-        order.prep_stage = 'collected'
-        order.prep_at = prep_at
-        order.settlement_status = 'released'
-        order.settlement_released_at = now
-        order.settlement_net = order.subtotal
-        order.payment_status = 'released'
-        order.save()
-
-        record_audit(request.user.email, 'collection_confirmed', 'order', order.id, {'payment': 'released'})
-
+    _release_escrow(order, 'student_confirmed', request.user.email)
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1523,24 +1558,7 @@ def complete_by_code_view(request, pk):
     if order.collected_at:
         return Response(OrderSerializer(order, context={'request': request}).data)
 
-    now = dj_timezone.now()
-    now_ms = int(now.timestamp() * 1000)
-    prep_at = order.prep_at or {}
-    prep_at['collected'] = now_ms
-
-    with transaction.atomic():
-        order.collected_at = now
-        order.collected_via = 'handoff_code'
-        order.prep_stage = 'collected'
-        order.prep_at = prep_at
-        order.settlement_status = 'released'
-        order.settlement_released_at = now
-        order.settlement_net = order.subtotal
-        order.payment_status = 'released'
-        order.save()
-
-        record_audit(request.user.email, 'handoff_code_verified', 'order', order.id, {'collectedVia': 'handoff_code'})
-
+    _release_escrow(order, 'handoff_code', request.user.email)
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1570,11 +1588,12 @@ def _recompute_vendor_rating(vendor):
     """Recalculates vendor rating and review count from all non-hidden customer reviews."""
     if not vendor:
         return
-    active_reviews = Review.objects.filter(vendor=vendor).exclude(moderation_status='hidden')
-    count = active_reviews.count()
+    agg = Review.objects.filter(vendor=vendor).exclude(moderation_status='hidden').aggregate(
+        avg=Avg('rating'), count=Count('id')
+    )
+    count = agg['count'] or 0
     if count > 0:
-        avg_rating = sum(r.rating for r in active_reviews) / count
-        vendor.rating = round(avg_rating, 1)
+        vendor.rating = round(agg['avg'], 1)
         vendor.reviews = count
     else:
         vendor.rating = 0.0
@@ -1756,24 +1775,29 @@ def payout_batches_view(request):
         return Response({'message': 'Nothing to settle yet — no released orders waiting.'}, status=status.HTTP_400_BAD_REQUEST)
 
     batch_id = _unique_id(PayoutBatch, 'PAY')
-    total_amount = sum(o.subtotal for o in released_orders)
+    agg = released_orders.aggregate(
+        total_amount=Sum('subtotal'),
+        period_start=Min('collected_at'),
+        period_end=Max('collected_at'),
+        order_count=Count('id'),
+    )
     now = dj_timezone.now()
 
     with transaction.atomic():
         batch = PayoutBatch.objects.create(
             id=batch_id,
-            amount=round(total_amount, 2),
+            amount=round(agg['total_amount'] or 0, 2),
             currency='GHS',
             status='paid',
-            order_count=released_orders.count(),
-            period_start=min(o.collected_at or o.created_at for o in released_orders),
-            period_end=max(o.collected_at or o.created_at for o in released_orders),
+            order_count=agg['order_count'] or 0,
+            period_start=agg['period_start'] or now,
+            period_end=agg['period_end'] or now,
             provider='paystack',
             provider_reference=f"TRF-{secrets.token_hex(4).upper()}",
             paid_at=now
         )
         released_orders.update(payout_batch_id=batch.id)
-        record_audit(request.user.email, 'payout_batch_created', 'payout_batch', batch.id, {'amount': total_amount})
+        record_audit(request.user.email, 'payout_batch_created', 'payout_batch', batch.id, {'amount': batch.amount})
 
     return Response(PayoutBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
 
@@ -1838,22 +1862,21 @@ def support_case_resolve_view(request, code):
     if action not in ('refund', 'dismiss'):
         return Response({'message': 'Invalid resolution action.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    now_iso = dj_timezone.now().isoformat()
     if action == 'refund' and case.order:
         with transaction.atomic():
             order = Order.objects.select_for_update().filter(id=case.order).first()
-            if order and order.status != 'cancelled':
-                order.status = 'cancelled'
-                order.cancel_reason = f"Admin refund on case {case.code}"
-                order.cancelled_at = now_iso
-                payment = order.payment or {}
-                if payment.get('status') in ('paid', 'released'):
-                    payment['status'] = 'refunded'
-                    payment['refundedAt'] = now_iso
+            if order and not order.cancelled_at:
+                now = dj_timezone.now()
+                order.cancelled_at = now
+                was_paid = order.payment_status in ('paid', 'released')
+                if was_paid and order.settlement_status == 'released':
+                    order.payment_status = 'refund_pending'
+                elif was_paid:
+                    order.payment_status = 'refunded'
                 else:
-                    payment['status'] = 'cancelled'
-                order.payment = payment
-                order.save()
+                    order.payment_status = 'cancelled'
+                order.save(update_fields=['cancelled_at', 'payment_status'])
+                record_audit(request.user.email, f'case_refund_order_cancelled', 'order', order.id, {'case': case.code})
 
     record_audit(request.user.email, f'case_{action}', 'support_case', case.code, {'order': case.order, 'vendor': case.vendor})
     case.delete()
