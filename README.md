@@ -68,6 +68,13 @@ python manage.py runserver 8000
 API endpoints will be available at:
 `http://localhost:8000/api/`
 
+### 6. Frontend Build-Time Dependency (`VITE_API_URL`)
+When building the companion React/Vite frontend (`stew`), `VITE_API_URL` **must** be present during `npm run build` because Vite inlines `VITE_*` environment variables at build time (and rejects missing `VITE_API_URL` at build time rather than emitting a broken 503 bundle). Example:
+```powershell
+$env:VITE_API_URL = 'https://api.stew.knust.edu.gh/api'
+npm run build
+```
+
 ---
 
 ## 🧪 Default Test Accounts
