@@ -2,10 +2,12 @@ import hmac
 import hashlib
 import json
 import logging
+import re
 import requests as http_requests
 import secrets
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from urllib.parse import urlparse
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import models, transaction
@@ -110,22 +112,30 @@ def _terminal_order_response(order):
 
 
 def _restore_order_stock(order) -> None:
-    """Restores meal stock quantities for every item line on a cancelled order."""
-    qty_by_meal = {}
-    for line in order.lines or []:
-        try:
-            qty = int(line.get('qty') or 0)
-        except (TypeError, ValueError):
-            continue
-        meal_id = str(line.get('mealId') or '').strip()
-        if meal_id and qty > 0:
-            qty_by_meal[meal_id] = qty_by_meal.get(meal_id, 0) + qty
-    if not qty_by_meal:
-        return
-    sorted_ids = sorted(qty_by_meal.keys())
-    list(Meal.objects.select_for_update().filter(id__in=sorted_ids).order_by('id'))
-    for meal_id in sorted_ids:
-        Meal.objects.filter(id=meal_id).update(left=models.F('left') + qty_by_meal[meal_id])
+    """Idempotently restores meal stock quantities for every item line on a cancelled order."""
+    with transaction.atomic():
+        locked_order = Order.objects.select_for_update().get(pk=order.pk)
+        prep_at = dict(locked_order.prep_at or {})
+        if prep_at.get('_stockRestored'):
+            return
+        qty_by_meal = {}
+        for line in locked_order.lines or []:
+            try:
+                qty = int(line.get('qty') or 0)
+            except (TypeError, ValueError):
+                continue
+            meal_id = str(line.get('mealId') or '').strip()
+            if meal_id and qty > 0:
+                qty_by_meal[meal_id] = qty_by_meal.get(meal_id, 0) + qty
+        if qty_by_meal:
+            sorted_ids = sorted(qty_by_meal.keys())
+            list(Meal.objects.select_for_update().filter(id__in=sorted_ids).order_by('id'))
+            for meal_id in sorted_ids:
+                Meal.objects.filter(id=meal_id).update(left=models.F('left') + qty_by_meal[meal_id])
+        prep_at['_stockRestored'] = True
+        locked_order.prep_at = prep_at
+        locked_order.save(update_fields=['prep_at'])
+        order.prep_at = prep_at
 
 
 def _parse_pagination(request, default_limit: int = 200, max_limit: int = 500):
@@ -177,14 +187,25 @@ def _zero_sales_by_day():
     return [{'d': d, 'v': 0.0} for d in _ORDERED_DAY_KEYS]
 
 
-def _sanitize_media_url(raw_val, max_len: int = 300000) -> str:
-    """Allows only empty string, data:image/* URIs, or https:// / relative URLs."""
+_SAFE_DATA_IMAGE_RE = re.compile(r'^data:image/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$', re.IGNORECASE)
+
+
+def _sanitize_media_url(raw_val, max_len: int = 600000) -> str:
+    """Allows empty string, validated raster data:image/*;base64 URIs, https:// URLs, or single-slash relative paths."""
     val = str(raw_val or '').strip()
     if not val:
         return ''
-    if val.startswith('data:image/') or val.startswith('https://') or val.startswith('/'):
-        return val[:max_len]
-    raise ValidationError('Image or logo must be a data:image/ URI or an https:// URL.')
+    if len(val) > max_len:
+        raise ValidationError(f'Image or URL exceeds maximum length ({max_len} characters).')
+    if _SAFE_DATA_IMAGE_RE.match(val):
+        return val
+    if val.startswith('https://') and len(val) <= 2048:
+        parsed = urlparse(val)
+        if parsed.netloc:
+            return val
+    if val.startswith('/') and not val.startswith('//') and len(val) <= 512:
+        return val
+    raise ValidationError('Image or logo must be a valid JPEG/PNG/WebP/GIF data URI, https:// URL, or relative path.')
 
 
 def _safe_price(raw, field='price') -> Decimal:
@@ -709,7 +730,7 @@ def me_view(request):
         changed_fields.append('payout')
     if 'logo' in data:
         try:
-            user.logo = _sanitize_media_url(data.get('logo'), max_len=300000)
+            user.logo = _sanitize_media_url(data.get('logo'), max_len=600000)
             changed_fields.append('logo')
         except ValidationError as e:
             return Response({'errors': {'logo': str(e.detail[0] if isinstance(e.detail, list) else e.detail)}}, status=status.HTTP_400_BAD_REQUEST)
@@ -843,7 +864,7 @@ def meals_list_view(request):
     try:
         price = _safe_price(data.get('price'))
         left = _safe_int(data.get('stock') if data.get('stock') not in (None, '') else data.get('left'), 0, 9999, 'stock', default=10)
-        image = _sanitize_media_url(data.get('image'), max_len=300000)
+        image = _sanitize_media_url(data.get('image'), max_len=600000)
     except ValidationError as e:
         return Response({'errors': e.detail, 'message': 'Please check the dish details.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -903,7 +924,7 @@ def meal_detail_view(request, pk):
         if 'on' in data:
             meal.on = data['on'] is True or str(data['on']).lower() in ('true', '1')
         if 'image' in data:
-            meal.image = _sanitize_media_url(data['image'], max_len=300000)
+            meal.image = _sanitize_media_url(data['image'], max_len=600000)
     except ValidationError as e:
         return Response({'errors': e.detail, 'message': 'Please check the dish details.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -953,7 +974,7 @@ def vendor_apply_view(request):
             user.bio = escape(str(data['about']).strip()[:500])
         if 'logo' in data:
             try:
-                user.logo = _sanitize_media_url(data['logo'], max_len=300000)
+                user.logo = _sanitize_media_url(data['logo'], max_len=600000)
             except ValidationError as e:
                 return Response({'errors': {'logo': str(e.detail[0] if isinstance(e.detail, list) else e.detail)}}, status=status.HTTP_400_BAD_REQUEST)
         user.save()
@@ -1089,7 +1110,7 @@ def orders_view(request):
             'price': float(line_price),
             'qty': qty,
             'note': escape(str(line.get('note', '') or '').strip())[:200],
-            'image': db_meal.image[:300] if db_meal.image.startswith(('https://', '/')) else '',
+            'image': db_meal.image[:300] if (db_meal.image.startswith('https://') or (db_meal.image.startswith('/') and not db_meal.image.startswith('//'))) else '',
         })
     # ------------------------------------------------------------------------
 
@@ -1319,9 +1340,11 @@ def init_payment_view(request):
 
 
 def _mark_order_paid(order, actor, reference):
-    """Idempotently moves an order into escrow-held 'paid' state."""
+    """Idempotently moves an order into escrow-held 'paid' state, never reviving cancelled/refunded orders."""
     with transaction.atomic():
         locked = Order.objects.select_for_update().get(pk=order.pk)
+        if locked.cancelled_at or locked.payment_status in ('cancelled', 'refunded', 'refund_pending'):
+            return locked
         if locked.payment_status in ['paid', 'released']:
             return locked
         locked.payment_status = 'paid'
@@ -1568,34 +1591,38 @@ def propose_meetup_view(request, pk):
     """Proposes a safe meeting spot for order collection."""
     if not check_rate_limit(f"meetup_{request.user.id}", limit=20, window_seconds=60):
         return Response({'message': 'Too many meetup requests. Please wait a moment.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    if not _is_order_participant(request.user, order):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-    terminal = _terminal_order_response(order)
-    if terminal:
-        return terminal
-
     place = escape(str(request.data.get('place', '')).strip()[:200])
     if len(place) < 3:
         return Response({'message': 'Please provide a valid meeting point.'}, status=status.HTTP_400_BAD_REQUEST)
     note = escape(str(request.data.get('note', '')).strip()[:300])
-    # Determine proposedBy from actual user identity — never trust client input for role
-    _user = request.user
-    proposed_by = 'vendor' if _is_order_vendor(_user, order) else 'student'
 
-    order.meetup = {
-        'place': place,
-        'note': note,
-        'proposedBy': proposed_by,
-        'proposedAt': int(dj_timezone.now().timestamp() * 1000),
-        'confirmedBy': [proposed_by],
-        'agreed': False
-    }
-    order.save(update_fields=['meetup'])
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _is_order_participant(request.user, order):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        terminal = _terminal_order_response(order)
+        if terminal:
+            return terminal
+        if order.payment_status not in ('paid', 'released'):
+            return Response({'message': 'Payment must be confirmed before proposing a meetup.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Determine proposedBy from actual user identity — never trust client input for role
+        _user = request.user
+        proposed_by = 'vendor' if _is_order_vendor(_user, order) else 'student'
+
+        order.meetup = {
+            'place': place,
+            'note': note,
+            'proposedBy': proposed_by,
+            'proposedAt': int(dj_timezone.now().timestamp() * 1000),
+            'confirmedBy': [proposed_by],
+            'agreed': False
+        }
+        order.save(update_fields=['meetup'])
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1604,28 +1631,33 @@ def propose_meetup_view(request, pk):
 @permission_classes([IsStudentUser])
 def confirm_meetup_view(request, pk):
     """Confirms the proposed meeting point."""
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    if not _is_order_participant(request.user, order):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-    terminal = _terminal_order_response(order)
-    if terminal:
-        return terminal
+        if not _is_order_participant(request.user, order):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        terminal = _terminal_order_response(order)
+        if terminal:
+            return terminal
+        if order.payment_status not in ('paid', 'released'):
+            return Response({'message': 'Payment must be confirmed before confirming a meetup.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if not order.meetup or not order.meetup.get('place'):
-        return Response({'message': 'Nobody has proposed a meeting point yet'}, status=status.HTTP_400_BAD_REQUEST)
+        if not order.meetup or not order.meetup.get('place'):
+            return Response({'message': 'Nobody has proposed a meeting point yet'}, status=status.HTTP_400_BAD_REQUEST)
 
-    who = 'vendor' if _is_order_vendor(request.user, order) else 'student'
-    confirmed_by = list(set((order.meetup.get('confirmedBy') or []) + [who]))
-    agreed = 'student' in confirmed_by and 'vendor' in confirmed_by
+        who = 'vendor' if _is_order_vendor(request.user, order) else 'student'
+        meetup = dict(order.meetup)
+        confirmed_by = list(set((meetup.get('confirmedBy') or []) + [who]))
+        agreed = 'student' in confirmed_by and 'vendor' in confirmed_by
 
-    order.meetup['confirmedBy'] = confirmed_by
-    order.meetup['agreed'] = agreed
-    order.meetup['agreedAt'] = int(dj_timezone.now().timestamp() * 1000) if agreed else None
-    order.save(update_fields=['meetup'])
+        meetup['confirmedBy'] = confirmed_by
+        meetup['agreed'] = agreed
+        meetup['agreedAt'] = int(dj_timezone.now().timestamp() * 1000) if agreed else None
+        order.meetup = meetup
+        order.save(update_fields=['meetup'])
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1634,19 +1666,22 @@ def confirm_meetup_view(request, pk):
 @permission_classes([IsStudentUser])
 def decline_meetup_view(request, pk):
     """Declines current meeting spot so another can be chosen."""
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    if not _is_order_participant(request.user, order):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-    terminal = _terminal_order_response(order)
-    if terminal:
-        return terminal
+        if not _is_order_participant(request.user, order):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        terminal = _terminal_order_response(order)
+        if terminal:
+            return terminal
+        if order.payment_status not in ('paid', 'released'):
+            return Response({'message': 'Payment must be confirmed before updating a meetup.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    order.meetup = None
-    order.save(update_fields=['meetup'])
+        order.meetup = None
+        order.save(update_fields=['meetup'])
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1655,36 +1690,40 @@ def decline_meetup_view(request, pk):
 @permission_classes([IsStudentUser])
 def send_order_message_view(request, pk):
     """Sends a sanitized message between student and chef."""
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    if not _is_order_participant(request.user, order):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-    terminal = _terminal_order_response(order)
-    if terminal:
-        return terminal
     if not check_rate_limit(f"order_msg_{request.user.id}", limit=30, window_seconds=60):
         return Response({'message': 'Too many messages sent. Please slow down.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-
     text = escape(str(request.data.get('text', '')).strip()[:500])
-    # Determine sender role from actual authenticated identity — never trust client input
-    _sender = request.user
-    from_role = 'vendor' if _is_order_vendor(_sender, order) else 'student'
     if not text:
         return Response({'message': 'Type a message first'}, status=status.HTTP_400_BAD_REQUEST)
 
-    messages = list(order.messages or [])
-    if len(messages) >= 100:
-        return Response({'message': 'Message limit reached for this order.'}, status=status.HTTP_400_BAD_REQUEST)
-    messages.append({
-        'from': from_role,
-        'text': text,
-        'at': int(dj_timezone.now().timestamp() * 1000)
-    })
-    order.messages = messages
-    order.save(update_fields=['messages'])
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _is_order_participant(request.user, order):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        terminal = _terminal_order_response(order)
+        if terminal:
+            return terminal
+        if order.payment_status not in ('paid', 'released'):
+            return Response({'message': 'Payment must be confirmed before messaging on an order.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Determine sender role from actual authenticated identity — never trust client input
+        _sender = request.user
+        from_role = 'vendor' if _is_order_vendor(_sender, order) else 'student'
+
+        messages = list(order.messages or [])
+        if len(messages) >= 100:
+            return Response({'message': 'Message limit reached for this order.'}, status=status.HTTP_400_BAD_REQUEST)
+        messages.append({
+            'from': from_role,
+            'text': text,
+            'at': int(dj_timezone.now().timestamp() * 1000)
+        })
+        order.messages = messages
+        order.save(update_fields=['messages'])
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1818,19 +1857,25 @@ def complete_by_code_view(request, pk):
 @permission_classes([IsVendorUser])
 def collection_nudge_view(request, pk):
     """Chef nudges student to confirm collection."""
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    if not _is_order_vendor_or_admin(request.user, order):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-    blocked = _inactive_vendor_response(request.user, order.vendor)
-    if blocked:
-        return blocked
+        if not _is_order_vendor_or_admin(request.user, order):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        blocked = _inactive_vendor_response(request.user, order.vendor)
+        if blocked:
+            return blocked
+        terminal = _terminal_order_response(order)
+        if terminal:
+            return terminal
+        if order.payment_status not in ('paid', 'released'):
+            return Response({'message': 'Cannot nudge collection for an unpaid order.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    order.collection_nudged_at = dj_timezone.now()
-    order.save(update_fields=['collection_nudged_at'])
+        order.collection_nudged_at = dj_timezone.now()
+        order.save(update_fields=['collection_nudged_at'])
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1842,17 +1887,23 @@ def _recompute_vendor_rating(vendor):
     """Recalculates vendor rating and review count from all non-hidden customer reviews."""
     if not vendor:
         return
-    agg = Review.objects.filter(vendor=vendor).exclude(moderation_status='hidden').aggregate(
-        avg=Avg('rating'), count=Count('id')
-    )
-    count = agg['count'] or 0
-    if count > 0:
-        vendor.rating = round(agg['avg'], 1)
-        vendor.reviews = count
-    else:
-        vendor.rating = 0.0
-        vendor.reviews = 0
-    vendor.save(update_fields=['rating', 'reviews'])
+    with transaction.atomic():
+        locked_vendor = Vendor.objects.select_for_update().filter(pk=vendor.pk).first()
+        if not locked_vendor:
+            return
+        agg = Review.objects.filter(vendor=locked_vendor).exclude(moderation_status='hidden').aggregate(
+            avg=Avg('rating'), count=Count('id')
+        )
+        count = agg['count'] or 0
+        if count > 0:
+            locked_vendor.rating = round(agg['avg'], 1)
+            locked_vendor.reviews = count
+        else:
+            locked_vendor.rating = 0.0
+            locked_vendor.reviews = 0
+        locked_vendor.save(update_fields=['rating', 'reviews'])
+        vendor.rating = locked_vendor.rating
+        vendor.reviews = locked_vendor.reviews
 
 
 @api_view(['GET'])
@@ -1940,11 +1991,6 @@ def moderation_queue_view(request):
 @permission_classes([IsAdminUser])
 def moderate_review_view(request, orderId):
     """Admin approves or hides a review."""
-    try:
-        review = Review.objects.get(order_id=orderId)
-    except Review.DoesNotExist:
-        return Response({'message': 'Review not found'}, status=status.HTTP_404_NOT_FOUND)
-
     VALID_DECISIONS = {'visible', 'hidden', 'pending'}
     decision = request.data.get('decision', 'visible')
     if decision not in VALID_DECISIONS:
@@ -1954,14 +2000,20 @@ def moderate_review_view(request, orderId):
         )
     reason = escape(str(request.data.get('reason', '')).strip()[:500])
 
-    review.moderation_status = decision
-    review.moderation_reason = reason
-    review.moderated_at = dj_timezone.now()
-    review.save()
+    with transaction.atomic():
+        try:
+            review = Review.objects.select_for_update().get(order_id=orderId)
+        except Review.DoesNotExist:
+            return Response({'message': 'Review not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    _recompute_vendor_rating(review.vendor)
+        review.moderation_status = decision
+        review.moderation_reason = reason
+        review.moderated_at = dj_timezone.now()
+        review.save()
 
-    record_audit(request.user.email, f"review_{decision}", 'review', orderId)
+        _recompute_vendor_rating(review.vendor)
+
+        record_audit(request.user.email, f"review_{decision}", 'review', orderId)
     return Response(ReviewSerializer(review).data)
 
 
@@ -2118,18 +2170,23 @@ def support_cases_view(request):
 @permission_classes([IsAdminUser])
 def support_case_resolve_view(request, code):
     """Admin endpoint to resolve/close a support case (refund or dismiss)."""
-    try:
-        case = SupportCase.objects.get(code=code)
-    except SupportCase.DoesNotExist:
-        return Response({'message': 'Support case not found.'}, status=status.HTTP_404_NOT_FOUND)
-
     action = str(request.data.get('action') or 'dismiss').lower()
     if action not in ('refund', 'dismiss'):
         return Response({'message': 'Invalid resolution action.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if action == 'refund' and case.order:
-        with transaction.atomic():
+    with transaction.atomic():
+        try:
+            case = SupportCase.objects.select_for_update().get(code=code)
+        except SupportCase.DoesNotExist:
+            return Response({'message': 'Support case not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if action == 'refund' and case.order:
             order = Order.objects.select_for_update().filter(id=case.order).first()
+            if order and order.payout_batch_id:
+                return Response(
+                    {'message': 'This order is already in a payout batch and requires manual finance settlement adjustment.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
             if order and not order.cancelled_at:
                 was_uncollected = not order.collected_at and order.prep_stage != 'collected'
                 now = dj_timezone.now()
@@ -2146,8 +2203,8 @@ def support_case_resolve_view(request, code):
                     _restore_order_stock(order)
                 record_audit(request.user.email, 'case_refund_order_cancelled', 'order', order.id, {'case': case.code})
 
-    record_audit(request.user.email, f'case_{action}', 'support_case', case.code, {'order': case.order, 'vendor': case.vendor})
-    case.delete()
+        record_audit(request.user.email, f'case_{action}', 'support_case', case.code, {'order': case.order, 'vendor': case.vendor})
+        case.delete()
     return Response({'ok': True, 'code': code, 'action': action})
 
 

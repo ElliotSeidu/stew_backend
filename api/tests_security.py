@@ -1370,3 +1370,124 @@ class PersistentRateLimitAndHandoffTests(TestCase):
         Order.objects.filter(id=expired_order.id).update(created_at=timezone.now() - timedelta(days=15))
         r_exp = self.client.post(f'/api/orders/{expired_order.id}/complete/', {'code': '135790'}, format='json')
         self.assertEqual(r_exp.status_code, 400)
+
+
+class AtomicStateAndUploadSecurityTests(TestCase):
+    """
+    FIN-07 & FIN-08: Refusing paid state revival on cancelled orders, blocking
+    meetup/chat/nudge on unpaid orders under row locks, idempotent stock
+    restoration, blocking support refunds for orders already in PayoutBatch,
+    and strict image/SVG/protocol-relative/oversized-upload sanitization.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_superuser(
+            email='atom.admin@st.knust.edu.gh', password='AdminPassword123',
+            full_name='Atom Admin',
+        )
+        cls.student = User.objects.create_user(
+            email='atom.cust@st.knust.edu.gh', password='Password123',
+            verified=True, phone='+233240000301', hall='Unity',
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='atom.vendor@st.knust.edu.gh', password='Password123',
+            verified=True, is_vendor=True, role='vendor', account_type='vendor',
+            phone='+233240000302', hall='Repub',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v-atom-1', user=cls.vendor_user, name='Atom Kitchen',
+            hall='Repub', active=True, open=True,
+        )
+        cls.meal = Meal.objects.create(
+            id='m-atom-1', vendor=cls.vendor, name='Atom Waakye',
+            price=Decimal('20.00'), left=5, on=True,
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_mark_order_paid_refuses_cancelled_or_refunded_order(self):
+        from api.views import _mark_order_paid
+        now = timezone.now()
+        o_can = Order.objects.create(
+            id='STW-ATOM-CAN', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='cancelled', cancelled_at=now,
+        )
+        _mark_order_paid(o_can, 'paystack_webhook', 'PSK-CAN-1')
+        o_can.refresh_from_db()
+        self.assertEqual(o_can.payment_status, 'cancelled')
+        self.assertIsNone(o_can.paid_at)
+
+    def test_meetup_chat_and_nudge_block_unpaid_orders(self):
+        unpaid = Order.objects.create(
+            id='STW-ATOM-UNPAID', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='pending', prep_stage='accepted',
+            meetup={'place': 'Gate', 'proposedBy': 'vendor', 'confirmedBy': ['vendor'], 'agreed': False},
+        )
+        self.client.force_authenticate(user=self.student)
+        self.assertEqual(self.client.post(f'/api/orders/{unpaid.id}/meetup/propose/', {'place': 'Hall'}, format='json').status_code, 400)
+        self.assertEqual(self.client.post(f'/api/orders/{unpaid.id}/meetup/confirm/', {}, format='json').status_code, 400)
+        self.assertEqual(self.client.post(f'/api/orders/{unpaid.id}/meetup/decline/', {}, format='json').status_code, 400)
+        self.assertEqual(self.client.post(f'/api/orders/{unpaid.id}/messages/', {'text': 'Hi'}, format='json').status_code, 400)
+
+        self.client.force_authenticate(user=self.vendor_user)
+        self.assertEqual(self.client.post(f'/api/orders/{unpaid.id}/collection-nudge/', {}, format='json').status_code, 400)
+
+    def test_restore_order_stock_is_idempotent(self):
+        from api.views import _restore_order_stock
+        order = Order.objects.create(
+            id='STW-ATOM-RST', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'qty': 2}],
+            subtotal=Decimal('40.00'), fee=Decimal('2.00'), total=Decimal('42.00'),
+            payment_status='cancelled', cancelled_at=timezone.now(),
+        )
+        before = Meal.objects.get(id=self.meal.id).left
+        _restore_order_stock(order)
+        _restore_order_stock(order)
+        after = Meal.objects.get(id=self.meal.id).left
+        self.assertEqual(after, before + 2)
+
+    def test_support_case_resolve_refund_blocks_order_in_payout_batch(self):
+        batch = PayoutBatch.objects.create(id='PAY-ATOM-1', amount=Decimal('20.00'), order_count=1)
+        order = Order.objects.create(
+            id='STW-ATOM-BATCHED', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='released', settlement_status='released',
+            prep_stage='collected', collected_at=timezone.now(), payout_batch_id=batch.id,
+        )
+        case = SupportCase.objects.create(code='CASE-ATOM-1', user=self.student, type='quality', order=order.id)
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(f'/api/support/cases/{case.code}/resolve/', {'action': 'refund'}, format='json')
+        self.assertEqual(res.status_code, 409)
+        order.refresh_from_db()
+        self.assertIsNone(order.cancelled_at)
+        self.assertTrue(SupportCase.objects.filter(code=case.code).exists())
+
+    def test_media_url_sanitization_blocks_svg_protocol_relative_and_oversized_while_accepting_jpeg(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        from api.views import _sanitize_media_url
+
+        for bad in (
+            'data:image/svg+xml;base64,PHN2Zz4=',
+            'data:image/svg+xml,<svg onload=alert(1)>',
+            '//evil.example/tracker.png',
+            'data:image/jpeg;base64,' + ('QUJD' * 160000),  # > 600,000 chars
+        ):
+            with self.assertRaises(DRFValidationError, msg=f'Should reject {bad[:40]}'):
+                _sanitize_media_url(bad)
+
+        valid_jpeg = 'data:image/jpeg;base64,' + ('QUJD' * 50000)  # ~200 KB compressed JPEG
+        self.assertEqual(_sanitize_media_url(valid_jpeg), valid_jpeg)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.vendor_user)}')
+        r_ok = self.client.post('/api/meals/', {
+            'name': 'Valid Photo Meal', 'price': 25, 'stock': 4, 'cat': 'Soups', 'image': valid_jpeg,
+        }, format='json')
+        self.assertEqual(r_ok.status_code, 201, r_ok.data)
