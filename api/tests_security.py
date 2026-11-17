@@ -824,3 +824,85 @@ class RateLimitPaginationAndSettingsSecurityTests(TestCase):
         self.assertEqual(settings.SESSION_COOKIE_SAMESITE, 'Lax')
         self.assertEqual(settings.CSRF_COOKIE_SAMESITE, 'Lax')
         self.assertEqual(settings.SECURE_CROSS_ORIGIN_OPENER_POLICY, 'same-origin')
+
+
+class Migration0003MessyDataTests(TestCase):
+    """
+    FIN-02: Migration 0003 must safely clean messy float values, non-finite inputs,
+    out-of-range decimals, and duplicate/long payment references on PostgreSQL.
+    """
+
+    @staticmethod
+    def _mig():
+        import importlib
+        return importlib.import_module('api.migrations.0003_decimal_money_and_constraints')
+
+    def test_quantize_handles_half_up_floats_nan_inf_and_overflow(self):
+        mig = self._mig()
+        self.assertEqual(mig._quantize(10.005, Decimal('0.50')), Decimal('10.01'))
+        self.assertEqual(mig._quantize(0.1 + 0.2, Decimal('0.00')), Decimal('0.30'))
+        self.assertEqual(mig._quantize(-50.0, Decimal('0.00')), Decimal('0.00'))
+        self.assertEqual(mig._quantize(float('nan'), Decimal('0.50')), Decimal('0.50'))
+        self.assertEqual(mig._quantize(float('inf'), Decimal('0.00')), Decimal('0.00'))
+        self.assertEqual(mig._quantize(1e15, Decimal('0.00')), Decimal('99999999.99'))
+        self.assertEqual(mig._quantize('not-a-number', Decimal('0.00')), Decimal('0.00'))
+
+    def test_normalize_deduplicates_shared_pk_prefix_and_long_payment_references(self):
+        mig = self._mig()
+        from types import SimpleNamespace
+        long_ref = 'R' * 125
+        rows = [
+            SimpleNamespace(pk='ordpref1-aaa', id='ordpref1-aaa', payment_reference='SAMEREF',
+                            subtotal=10.0, fee=1.0, total=11.0, settlement_net=10.0),
+            SimpleNamespace(pk='ordpref1-bbb', id='ordpref1-bbb', payment_reference='SAMEREF',
+                            subtotal=10.0, fee=1.0, total=11.0, settlement_net=10.0),
+            SimpleNamespace(pk='ordpref1-ccc', id='ordpref1-ccc', payment_reference='SAMEREF',
+                            subtotal=10.0, fee=1.0, total=11.0, settlement_net=10.0),
+            SimpleNamespace(pk='ordlong-1111', id='ordlong-1111', payment_reference=long_ref,
+                            subtotal=10.0, fee=1.0, total=11.0, settlement_net=10.0),
+            SimpleNamespace(pk='ordlong-2222', id='ordlong-2222', payment_reference=long_ref,
+                            subtotal=10.0, fee=1.0, total=11.0, settlement_net=10.0),
+            SimpleNamespace(pk='ordblank-1', id='ordblank-1', payment_reference='   ',
+                            subtotal=0.0, fee=0.0, total=0.0, settlement_net=0.0),
+        ]
+
+        class _QS(list):
+            def order_by(self, *args):
+                return self
+
+        class _Mgr:
+            def __init__(self, items):
+                self._items = items
+                self.updates = {}
+
+            def all(self):
+                return _QS(self._items)
+
+            def filter(self, pk=None, **kwargs):
+                mgr = self
+
+                class _Up:
+                    def update(self, **u):
+                        mgr.updates[pk] = u
+                return _Up()
+
+        class _Apps:
+            def __init__(self):
+                self.order_mgr = _Mgr(rows)
+                self.empty = _Mgr([])
+
+            def get_model(self, app, name):
+                m = self.order_mgr if name == 'Order' else self.empty
+                return SimpleNamespace(objects=m)
+
+        fake_apps = _Apps()
+        mig.normalize_existing_rows(fake_apps, None)
+        final_refs = {}
+        for r in rows:
+            final_refs[r.pk] = fake_apps.order_mgr.updates.get(r.pk, {}).get('payment_reference', r.payment_reference)
+
+        self.assertIsNone(final_refs['ordblank-1'])
+        non_null = [v for v in final_refs.values() if v is not None]
+        self.assertEqual(len(non_null), len(set(non_null)))
+        for ref in non_null:
+            self.assertLessEqual(len(ref), 128)
