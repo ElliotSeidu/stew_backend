@@ -2,7 +2,7 @@ import hmac
 from rest_framework import authentication, permissions
 from rest_framework.exceptions import AuthenticationFailed
 from api.models import User
-from api.security import decode_jwt_token, password_fingerprint
+from api.security import decode_jwt_token, is_jwt_revoked, password_fingerprint
 from api.validators import KNUST_STUDENT_EMAIL_REGEX
 
 
@@ -22,6 +22,8 @@ class JWTAuthentication(authentication.BaseAuthentication):
 
         token = parts[1]
         payload = decode_jwt_token(token)
+        if is_jwt_revoked(token, payload):
+            raise AuthenticationFailed('Token has been revoked. Please log in again.')
 
         user_id = payload.get('sub')
         if not user_id:

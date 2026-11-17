@@ -39,7 +39,7 @@ from api.serializers import (
 )
 from api.security import (
     generate_6digit_code, hash_token, verify_hashed_token,
-    generate_jwt_token, check_rate_limit
+    generate_jwt_token, check_rate_limit, revoke_jwt_token
 )
 from api.validators import clean_knust_email, validate_student_ref_id, validate_ghana_phone
 
@@ -418,7 +418,7 @@ def verify_email_view(request):
     try:
         user = User.objects.get(email=email)
     except User.DoesNotExist:
-        return Response({'message': 'No account found with this email.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
     # Constant-time hashed comparison only — no hardcoded bypass codes permitted
     code_valid = False
@@ -760,6 +760,17 @@ def me_view(request):
 
     record_audit(user.email, 'profile_updated', 'user', user.id)
     return Response(UserSerializer(user).data)
+
+
+@api_view(['POST'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsStudentUser])
+def logout_view(request):
+    """Revokes the caller's current JWT access token."""
+    if request.auth:
+        revoke_jwt_token(str(request.auth))
+    record_audit(request.user.email, 'logout', 'user', request.user.id)
+    return Response({'ok': True})
 
 
 @api_view(['DELETE'])

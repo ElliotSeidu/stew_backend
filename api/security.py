@@ -63,6 +63,7 @@ def generate_jwt_token(user) -> str:
     lifetime = int(getattr(settings, 'JWT_ACCESS_TOKEN_LIFETIME_HOURS', 24))
     payload = {
         'sub': str(user.id),
+        'jti': secrets.token_hex(16),
         'role': user.role,
         'pv': password_fingerprint(user),
         'iat': int(now.timestamp()),
@@ -79,6 +80,40 @@ def decode_jwt_token(token: str) -> dict:
         raise AuthenticationFailed('Token has expired. Please log in again.')
     except jwt.InvalidTokenError:
         raise AuthenticationFailed('Invalid authorization token.')
+
+
+def _revoked_jwt_key(token: str, payload: dict | None = None) -> str:
+    jti = (payload or {}).get('jti')
+    if jti:
+        raw = f"jwt_revoked_{jti}"
+    else:
+        raw = f"jwt_revoked_{hashlib.sha256(str(token).encode('utf-8')).hexdigest()}"
+    return raw if len(raw) <= 255 else hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def revoke_jwt_token(token: str, payload: dict | None = None) -> None:
+    """Records a JWT access token's jti (or hash fallback) in the persistent DB blocklist."""
+    from django.utils import timezone as dj_timezone
+    from api.models import RateLimitBucket
+
+    if not token:
+        return
+    if payload is None:
+        try:
+            payload = decode_jwt_token(token)
+        except Exception:
+            payload = {}
+    RateLimitBucket.objects.update_or_create(
+        key=_revoked_jwt_key(token, payload),
+        defaults={'count': 1, 'window_start': dj_timezone.now()},
+    )
+
+
+def is_jwt_revoked(token: str, payload: dict | None = None) -> bool:
+    """Returns True if the JWT access token has been explicitly revoked."""
+    from api.models import RateLimitBucket
+
+    return RateLimitBucket.objects.filter(key=_revoked_jwt_key(token, payload)).exists()
 
 
 def check_rate_limit(key: str, limit: int = 5, window_seconds: int = 60) -> bool:

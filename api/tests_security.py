@@ -1799,3 +1799,71 @@ class IDORAndSerializerExposureTests(TestCase):
         ):
             ro = getattr(ser_cls.Meta, 'read_only_fields', ())
             self.assertEqual(set(ro), set(ser_cls.Meta.fields), f'{ser_cls.__name__} missing read_only_fields')
+
+
+class AuthAndEmailBypassTests(TestCase):
+    """
+    FIN-13: JWT tokens must be revocable via /api/auth/logout/, campus email normalization must
+    block +aliases, consecutive/edge dots, percent/control chars, homoglyphs, and subdomains,
+    and verify-email must not enumerate missing accounts via 404.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='fin13.student@st.knust.edu.gh', password='Password123',
+            full_name='Fin13 Student', reference_id='20891301', phone='0249130001',
+            hall='Unity Hall', verified=True, role='customer', account_type='customer',
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+
+    def test_logout_revokes_jwt_while_new_token_still_works(self):
+        token1 = generate_jwt_token(self.student)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token1}')
+        r_me1 = self.client.get('/api/auth/me/')
+        self.assertEqual(r_me1.status_code, 200)
+
+        r_logout = self.client.post('/api/auth/logout/', {}, format='json')
+        self.assertEqual(r_logout.status_code, 200)
+        self.assertEqual(r_logout.data, {'ok': True})
+
+        # Revoked token is immediately rejected
+        r_after = self.client.get('/api/auth/me/')
+        self.assertEqual(r_after.status_code, 401)
+
+        # Fresh login / token still works normally
+        token2 = generate_jwt_token(self.student)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token2}')
+        r_me2 = self.client.get('/api/auth/me/')
+        self.assertEqual(r_me2.status_code, 200)
+
+    def test_clean_knust_email_rejects_plus_dots_control_homoglyphs_and_subdomains(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        from api.validators import clean_knust_email
+
+        bad_emails = [
+            'kofi+alias@st.knust.edu.gh',
+            'kofi%00@st.knust.edu.gh',
+            '.kofi@st.knust.edu.gh',
+            'kofi.@st.knust.edu.gh',
+            'kofi..b@st.knust.edu.gh',
+            'k\u043efi@st.knust.edu.gh',
+            'kofi@sub.st.knust.edu.gh',
+        ]
+        for bad in bad_emails:
+            with self.assertRaises(DRFValidationError, msg=f'Expected rejection for {bad!r}'):
+                clean_knust_email(bad)
+
+        self.assertEqual(clean_knust_email(' Kofi.Boateng-1@ST.KNUST.EDU.GH '), 'kofi.boateng-1@st.knust.edu.gh')
+        self.assertEqual(clean_knust_email('admin_ops@st.knust.edu.gh'), 'admin_ops@st.knust.edu.gh')
+
+    def test_verify_email_does_not_enumerate_unknown_accounts(self):
+        r = self.client.post('/api/auth/verify-email/', {
+            'email': 'nonexistent.fin13@st.knust.edu.gh',
+            'code': '123456',
+        }, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.data.get('message'), 'Invalid or expired code')

@@ -7,6 +7,7 @@ urlpatterns = [
     path('auth/verify-email/', views.verify_email_view, name='verify_email'),
     path('auth/resend-code/', views.resend_code_view, name='resend_code'),
     path('auth/login/', views.login_view, name='login'),
+    path('auth/logout/', views.logout_view, name='logout'),
     path('auth/forgot-password/', views.forgot_password_view, name='forgot_password'),
     path('auth/reset-password/', views.reset_password_view, name='reset_password'),
     path('auth/login-code/request/', views.request_login_code_view, name='request_login_code'),

@@ -2,8 +2,8 @@ import re
 from rest_framework.exceptions import ValidationError
 
 KNUST_STUDENT_EMAIL_REGEX = re.compile(
-    r'^[a-zA-Z0-9._%+-]+@st\.knust\.edu\.gh$',
-    re.IGNORECASE
+    r'^[a-z0-9]+(?:[._-][a-z0-9]+)*@st\.knust\.edu\.gh\Z',
+    re.IGNORECASE | re.ASCII,
 )
 GHANA_PHONE_REGEX = re.compile(r'^(?:\+233|0)[25]\d{8}$')
 STUDENT_REF_ID_REGEX = re.compile(r'^\d{8}$')
