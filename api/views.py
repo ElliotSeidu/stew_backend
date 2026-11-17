@@ -388,7 +388,7 @@ def verify_email_view(request):
                     entity_type='vendor',
                     entity_id=inactive_vendor.id,
                 )
-                .order_by('-created_at')
+                .order_by('-at')
                 .first()
             )
             if not last_admin_evt or last_admin_evt.extra.get('active') is not False:
