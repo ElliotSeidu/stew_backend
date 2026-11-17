@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 
 from api.models import User, Vendor, Meal, Order, Review
 from api.security import generate_jwt_token, _RATE_LIMIT_CACHE
-from api.views import _recompute_vendor_rating
+from api.views import _release_escrow, _recompute_vendor_rating
 
 
 def _make_student(email, ref='20899001', role='customer'):
@@ -76,6 +76,40 @@ def _make_paid_order(customer, vendor, meal, oid='STW-INV1', subtotal=40.0):
         settlement_status='pending',
         messages=[],
     )
+
+
+class EscrowHelperTest(TestCase):
+    """Tests for the extracted _release_escrow helper function."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = _make_student('escrow.student@st.knust.edu.gh', ref='20899010')
+        cls.vendor_user = _make_student('escrow.vendor@st.knust.edu.gh', ref='20899011', role='vendor')
+        cls.vendor = _make_vendor(cls.vendor_user, vid='v_esc1', name='Escrow Kitchen')
+        cls.meal = _make_meal(cls.vendor, mid='m_esc1')
+
+    def _paid_order(self, oid):
+        return _make_paid_order(self.student, self.vendor, self.meal, oid=oid)
+
+    def test_release_escrow_student_confirmed(self):
+        """_release_escrow sets correct fields when student confirms collection."""
+        order = self._paid_order('STW-ESC1')
+        _release_escrow(order, 'student_confirmed', self.student.email)
+        order.refresh_from_db()
+        self.assertIsNotNone(order.collected_at)
+        self.assertEqual(order.collected_via, 'student_confirmed')
+        self.assertEqual(order.prep_stage, 'collected')
+        self.assertEqual(order.settlement_status, 'released')
+        self.assertEqual(order.payment_status, 'released')
+        self.assertEqual(order.settlement_net, order.subtotal)
+
+    def test_release_escrow_handoff_code(self):
+        """_release_escrow sets correct fields when vendor verifies handoff code."""
+        order = self._paid_order('STW-ESC2')
+        _release_escrow(order, 'handoff_code', self.vendor_user.email)
+        order.refresh_from_db()
+        self.assertEqual(order.collected_via, 'handoff_code')
+        self.assertEqual(order.payment_status, 'released')
 
 
 class RatingAggregateTest(TestCase):

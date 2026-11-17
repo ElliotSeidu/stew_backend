@@ -1305,6 +1305,34 @@ def payouts_ledger_view(request):
 # MEETUP & HANDOVER ESCROW CONFIRMATION
 # ============================================================================
 
+def _release_escrow(order, collected_via: str, actor_email: str) -> None:
+    """Marks an order as collected and releases its escrow payment to the vendor.
+
+    Called by both student-confirmation and handoff-code paths. Idempotent if
+    ``order.collected_at`` is already set (callers check before calling).
+    """
+    now = dj_timezone.now()
+    now_ms = int(now.timestamp() * 1000)
+    prep_at = order.prep_at or {}
+    prep_at['collected'] = now_ms
+    with transaction.atomic():
+        order.collected_at = now
+        order.collected_via = collected_via
+        order.prep_stage = 'collected'
+        order.prep_at = prep_at
+        order.settlement_status = 'released'
+        order.settlement_released_at = now
+        order.settlement_net = order.subtotal
+        order.payment_status = 'released'
+        order.save(update_fields=[
+            'collected_at', 'collected_via', 'prep_stage', 'prep_at',
+            'settlement_status', 'settlement_released_at', 'settlement_net',
+            'payment_status',
+        ])
+        audit_action = 'collection_confirmed' if collected_via == 'student_confirmed' else 'handoff_code_verified'
+        record_audit(actor_email, audit_action, 'order', order.id, {'collectedVia': collected_via})
+
+
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsStudentUser])
@@ -1473,24 +1501,7 @@ def mark_collected_view(request, pk):
     if order.collected_at:
         return Response(OrderSerializer(order, context={'request': request}).data)
 
-    now = dj_timezone.now()
-    now_ms = int(now.timestamp() * 1000)
-    prep_at = order.prep_at or {}
-    prep_at['collected'] = now_ms
-
-    with transaction.atomic():
-        order.collected_at = now
-        order.collected_via = 'student_confirmed'
-        order.prep_stage = 'collected'
-        order.prep_at = prep_at
-        order.settlement_status = 'released'
-        order.settlement_released_at = now
-        order.settlement_net = order.subtotal
-        order.payment_status = 'released'
-        order.save()
-
-        record_audit(request.user.email, 'collection_confirmed', 'order', order.id, {'payment': 'released'})
-
+    _release_escrow(order, 'student_confirmed', request.user.email)
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1527,24 +1538,7 @@ def complete_by_code_view(request, pk):
     if order.collected_at:
         return Response(OrderSerializer(order, context={'request': request}).data)
 
-    now = dj_timezone.now()
-    now_ms = int(now.timestamp() * 1000)
-    prep_at = order.prep_at or {}
-    prep_at['collected'] = now_ms
-
-    with transaction.atomic():
-        order.collected_at = now
-        order.collected_via = 'handoff_code'
-        order.prep_stage = 'collected'
-        order.prep_at = prep_at
-        order.settlement_status = 'released'
-        order.settlement_released_at = now
-        order.settlement_net = order.subtotal
-        order.payment_status = 'released'
-        order.save()
-
-        record_audit(request.user.email, 'handoff_code_verified', 'order', order.id, {'collectedVia': 'handoff_code'})
-
+    _release_escrow(order, 'handoff_code', request.user.email)
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
