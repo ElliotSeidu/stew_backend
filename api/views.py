@@ -74,6 +74,18 @@ def _is_order_vendor_or_admin(user, order) -> bool:
     return _is_order_vendor(user, order) or is_platform_admin(user)
 
 
+def _inactive_vendor_response(user, vendor):
+    """Returns a 403 Response if a non-admin caller operates on a suspended or missing kitchen."""
+    if is_platform_admin(user):
+        return None
+    if not vendor or not vendor.active:
+        return Response(
+            {'message': 'Your kitchen is currently suspended or inactive.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return None
+
+
 def _sanitize_media_url(raw_val, max_len: int = 300000) -> str:
     """Allows only empty string, data:image/* URIs, or https:// / relative URLs."""
     val = str(raw_val or '').strip()
@@ -236,7 +248,7 @@ def register_view(request):
                 verification_code_expires=expires_at,
             )
 
-            # If creating a vendor, setup initial vendor record
+            # If creating a vendor, setup initial vendor record (inactive until email is verified)
             if wants_vendor and kitchen_name:
                 v_id = f"v_{secrets.token_hex(4)}"
                 Vendor.objects.create(
@@ -244,7 +256,8 @@ def register_view(request):
                     user=user,
                     name=kitchen_name,
                     hall=hall,
-                    open=True,
+                    open=False,
+                    active=False,
                     rating=0.0,
                     reviews=0,
                     prep=6
@@ -288,6 +301,7 @@ def verify_email_view(request):
     if not code_valid:
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
+    was_unverified = not user.verified
     user.verified = True
     user.verification_code_hash = ''
     user.verification_code_expires = None
@@ -301,6 +315,8 @@ def verify_email_view(request):
         'login_code_hash',
         'login_code_expires',
     ])
+    if was_unverified:
+        Vendor.objects.filter(user=user, active=False).update(active=True, open=True)
 
     token = generate_jwt_token(user)
     record_audit(user.email, 'email_verified', 'user', user.id)
@@ -598,7 +614,7 @@ def me_view(request):
             vendor.bio = user.bio
             vendor.prep = user.prep
             vendor.logo = user.logo
-            if 'open' in data or 'kitchenOpen' in data:
+            if vendor.active and ('open' in data or 'kitchenOpen' in data):
                 raw_open = data.get('open', data.get('kitchenOpen'))
                 vendor.open = raw_open is True or str(raw_open).lower() in ('true', '1')
             vendor.save()
@@ -645,9 +661,19 @@ def vendor_detail_view(request, pk):
     """Retrieves vendor details."""
     try:
         vendor = Vendor.objects.get(id=pk)
-        return Response(VendorSerializer(vendor).data)
     except Vendor.DoesNotExist:
         return Response({'message': 'Kitchen not found'}, status=status.HTTP_404_NOT_FOUND)
+    if not vendor.active:
+        allow_inactive = False
+        try:
+            auth_res = JWTAuthentication().authenticate(request)
+            if auth_res and is_platform_admin(auth_res[0]):
+                allow_inactive = True
+        except Exception:
+            allow_inactive = False
+        if not allow_inactive:
+            return Response({'message': 'Kitchen not found'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(VendorSerializer(vendor).data)
 
 
 @api_view(['GET', 'POST'])
@@ -665,7 +691,7 @@ def meals_list_view(request):
         meals = Meal.objects.select_related('vendor').filter(on=True, vendor__active=True)
         return Response(MealSerializer(meals, many=True).data)
 
-    # Adding a meal requires vendor authentication
+    # Adding a meal requires verified, active vendor authentication
     auth_header = request.headers.get('Authorization')
     if not auth_header:
         return Response({'message': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
@@ -675,10 +701,17 @@ def meals_list_view(request):
     if not auth_res:
         return Response({'message': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
     user, _ = auth_res
+    if not user.verified:
+        return Response({'message': 'Please verify your email first.'}, status=status.HTTP_403_FORBIDDEN)
+    if not (user.is_vendor or user.role == 'vendor' or user.account_type in ('vendor', 'both') or is_platform_admin(user)):
+        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     vendor = Vendor.objects.filter(user=user).first()
     if not vendor:
         return Response({'message': 'Vendor profile not found for this account.'}, status=status.HTTP_400_BAD_REQUEST)
+    blocked = _inactive_vendor_response(user, vendor)
+    if blocked:
+        return blocked
 
     data = request.data
     name = escape(str(data.get('name', '')).strip())[:150]
@@ -720,6 +753,9 @@ def meal_detail_view(request, pk):
     # Permission check: must belong to user's vendor unless admin
     if not is_platform_admin(request.user) and meal.vendor.user != request.user:
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    blocked = _inactive_vendor_response(request.user, meal.vendor)
+    if blocked:
+        return blocked
 
     if request.method == 'DELETE':
         meal.delete()
@@ -771,6 +807,13 @@ def vendor_apply_view(request):
         sells = [escape(str(s).strip())[:60] for s in sells if str(s).strip()][:20]
     else:
         sells = []
+
+    existing_vendor = Vendor.objects.filter(user=user).first()
+    if existing_vendor and not existing_vendor.active:
+        return Response(
+            {'message': 'Your kitchen is currently suspended and cannot be reactivated without admin approval.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     with transaction.atomic():
         user.kitchen_name = kitchen_name
@@ -1454,6 +1497,9 @@ def set_prep_stage_view(request, pk):
 
     if not _is_order_vendor_or_admin(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    blocked = _inactive_vendor_response(request.user, order.vendor)
+    if blocked:
+        return blocked
 
     if order.cancelled_at:
         return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1521,6 +1567,9 @@ def complete_by_code_view(request, pk):
 
     if not _is_order_vendor_or_admin(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    blocked = _inactive_vendor_response(request.user, order.vendor)
+    if blocked:
+        return blocked
 
     if order.cancelled_at:
         return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1554,6 +1603,9 @@ def collection_nudge_view(request, pk):
 
     if not _is_order_vendor_or_admin(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    blocked = _inactive_vendor_response(request.user, order.vendor)
+    if blocked:
+        return blocked
 
     order.collection_nudged_at = dj_timezone.now()
     order.save(update_fields=['collection_nudged_at'])
@@ -1749,7 +1801,8 @@ def payout_batches_view(request):
     released_orders = Order.objects.filter(
         settlement_status='released',
         payout_batch_id__isnull=True,
-        cancelled_at__isnull=True
+        cancelled_at__isnull=True,
+        vendor__active=True,
     )
     if not released_orders.exists():
         return Response({'message': 'Nothing to settle yet — no released orders waiting.'}, status=status.HTTP_400_BAD_REQUEST)

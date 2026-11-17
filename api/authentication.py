@@ -52,15 +52,25 @@ def is_platform_admin(user) -> bool:
 
 
 class IsStudentUser(permissions.BasePermission):
-    """Allows access only to authenticated KNUST student users."""
+    """Allows access only to authenticated, verified KNUST student users."""
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.is_active)
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.is_active
+            and request.user.verified
+        )
 
 
 class IsVendorUser(permissions.BasePermission):
-    """Allows access to users who are vendors, both, or administrators."""
+    """Allows access to verified users who are vendors, both, or administrators."""
     def has_permission(self, request, view):
-        if not (request.user and request.user.is_authenticated):
+        if not (
+            request.user
+            and request.user.is_authenticated
+            and request.user.is_active
+            and request.user.verified
+        ):
             return False
         return bool(
             request.user.is_vendor
