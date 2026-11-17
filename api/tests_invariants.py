@@ -1,6 +1,7 @@
 """
 Invariant and failure-scenario tests for the STEW API.
 """
+from datetime import timedelta
 import json
 import secrets
 from django.test import TestCase
@@ -1039,3 +1040,27 @@ class AdminSelfProtectionAndEscalationTest(TestCase):
         self.assertFalse(created.is_staff)
         self.assertEqual(created.role, 'customer')
         self.assertEqual(created.account_type, 'customer')
+
+
+class UpdateFieldsSafetyTest(TestCase):
+    """Ensures partial updates with update_fields preserve auto_now timestamp updates."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = _make_student('uf.student@st.knust.edu.gh', ref='20872001')
+        cls.token = generate_jwt_token(cls.student)
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_me_view_patch_advances_updated_at(self):
+        past = timezone.now() - timedelta(minutes=10)
+        User.objects.filter(pk=self.student.pk).update(updated_at=past)
+        self.student.refresh_from_db()
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.token}')
+        res = self.client.patch('/api/auth/me/', {'fullName': 'Updated Student Name'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.student.refresh_from_db()
+        self.assertGreater(self.student.updated_at, past)

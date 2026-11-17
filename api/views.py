@@ -585,7 +585,7 @@ def me_view(request):
             return Response({'errors': {'logo': str(e.detail[0] if isinstance(e.detail, list) else e.detail)}}, status=status.HTTP_400_BAD_REQUEST)
 
     if changed_fields:
-        user.save(update_fields=changed_fields)
+        user.save(update_fields=changed_fields + ['updated_at'])
 
     # Keep Vendor record synchronized when a vendor updates their kitchen profile
     if user.is_vendor or user.role == 'vendor' or user.account_type in ('vendor', 'both'):
