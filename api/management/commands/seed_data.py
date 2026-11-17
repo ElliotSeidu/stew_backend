@@ -1,4 +1,6 @@
-from django.core.management.base import BaseCommand
+import os
+from django.conf import settings
+from django.core.management.base import BaseCommand, CommandError
 from api.models import User, Vendor, Meal, Review, Compliance
 
 
@@ -11,9 +13,24 @@ class Command(BaseCommand):
             action='store_true',
             help='Also seed demo student users, sample vendors, and sample dishes',
         )
+        parser.add_argument(
+            '--reset-admin-password',
+            action='store_true',
+            help='Explicitly reset the default ops admin password if the account already exists',
+        )
 
     def handle(self, *args, **options):
-        admin_user, _ = User.objects.get_or_create(
+        is_debug = getattr(settings, 'DEBUG', False)
+        if not is_debug:
+            if options.get('demo'):
+                raise CommandError('Refusing to seed --demo accounts when DEBUG=False.')
+            seed_pw = os.getenv('SEED_ADMIN_PASSWORD', '')
+            if len(seed_pw) < 12:
+                raise CommandError('SEED_ADMIN_PASSWORD (at least 12 characters) is required when DEBUG=False.')
+        else:
+            seed_pw = os.getenv('SEED_ADMIN_PASSWORD', '') or 'admin1234'
+
+        admin_user, created = User.objects.get_or_create(
             email='admin@st.knust.edu.gh',
             defaults={
                 'full_name': 'STEW Operations Admin',
@@ -28,7 +45,8 @@ class Command(BaseCommand):
                 'verified': True,
             }
         )
-        admin_user.set_password('admin1234')
+        if created or options.get('reset_admin_password'):
+            admin_user.set_password(seed_pw)
         admin_user.is_admin = True
         admin_user.is_staff = True
         admin_user.is_superuser = True

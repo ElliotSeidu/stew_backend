@@ -116,6 +116,22 @@ def is_jwt_revoked(token: str, payload: dict | None = None) -> bool:
     return RateLimitBucket.objects.filter(key=_revoked_jwt_key(token, payload)).exists()
 
 
+class SecurityHeadersMiddleware:
+    """Attaches Content-Security-Policy and Permissions-Policy headers on every response."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        if request.path.startswith('/admin/'):
+            response.setdefault('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'")
+        else:
+            response.setdefault('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+        response.setdefault('Permissions-Policy', 'geolocation=(), camera=(), microphone=(), payment=()')
+        return response
+
+
 def check_rate_limit(key: str, limit: int = 5, window_seconds: int = 60) -> bool:
     """
     Persistent atomic DB-backed sliding-window rate limiter.

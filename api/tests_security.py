@@ -1867,3 +1867,67 @@ class AuthAndEmailBypassTests(TestCase):
         }, format='json')
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.data.get('message'), 'Invalid or expired code')
+
+
+class SettingsAndAdminHardeningTests(TestCase):
+    """
+    FIN-14: seed_data must refuse --demo and weak passwords in production without clobbering
+    existing admin credentials, Django /admin/ must obey is_admin + verified, and responses
+    must include Content-Security-Policy and Permissions-Policy headers.
+    """
+
+    def test_seed_data_refuses_demo_or_weak_default_password_in_prod_and_preserves_existing_admin_password(self):
+        import os
+        from django.core.management import CommandError, call_command
+
+        with override_settings(DEBUG=False):
+            with self.assertRaises(CommandError):
+                call_command('seed_data', demo=True)
+
+            env_copy = os.environ.copy()
+            env_copy.pop('SEED_ADMIN_PASSWORD', None)
+            with patch.dict(os.environ, env_copy, clear=True):
+                with self.assertRaises(CommandError):
+                    call_command('seed_data')
+
+        existing = User.objects.create_user(
+            email='admin@st.knust.edu.gh', password='CustomStrongPass99',
+            full_name='Existing Ops Admin', reference_id='20819999',
+            phone='0257059777', hall='Commercial Area',
+            role='admin', account_type='admin',
+            is_admin=True, is_staff=True, is_superuser=True, verified=True,
+        )
+        with override_settings(DEBUG=True):
+            call_command('seed_data')
+        existing.refresh_from_db()
+        self.assertTrue(existing.check_password('CustomStrongPass99'))
+        self.assertFalse(existing.check_password('admin1234'))
+
+    def test_django_admin_site_requires_is_admin_and_verified(self):
+        from types import SimpleNamespace
+        from django.contrib import admin
+        import stew_server.urls  # noqa: F401
+
+        staff_only = SimpleNamespace(
+            is_authenticated=True, is_active=True,
+            is_staff=True, is_superuser=True, is_admin=False, verified=True,
+        )
+        unverified_admin = SimpleNamespace(
+            is_authenticated=True, is_active=True,
+            is_staff=True, is_superuser=True, is_admin=True, verified=False,
+        )
+        platform_admin = SimpleNamespace(
+            is_authenticated=True, is_active=True,
+            is_staff=True, is_superuser=False, is_admin=True, verified=True,
+        )
+        self.assertFalse(admin.site.has_permission(SimpleNamespace(user=staff_only)))
+        self.assertFalse(admin.site.has_permission(SimpleNamespace(user=unverified_admin)))
+        self.assertTrue(admin.site.has_permission(SimpleNamespace(user=platform_admin)))
+
+    def test_security_headers_csp_and_permissions_policy_present(self):
+        r = self.client.get('/api/vendors/')
+        self.assertEqual(r.status_code, 200)
+        csp = r.headers.get('Content-Security-Policy', '')
+        self.assertIn("default-src 'none'", csp)
+        self.assertIn("frame-ancestors 'none'", csp)
+        self.assertTrue(r.headers.get('Permissions-Policy'))
