@@ -1615,3 +1615,79 @@ class PaystackHardeningTests(TestCase):
         self.assertEqual(r1.data['reference'], r2.data['reference'])
         self.order.refresh_from_db()
         self.assertEqual(self.order.payment_reference, r1.data['reference'])
+
+
+class QuantityAndRatingValidationTests(TestCase):
+    """
+    FIN-11: Quantities, prep time, and review ratings must strictly validate as whole
+    integers inside their domain bounds instead of truncating floats, accepting booleans,
+    clamping invalid ratings, or letting split lines exceed max per-dish limits.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='fin11.student@st.knust.edu.gh', password='Password123',
+            full_name='Fin11 Student', reference_id='20891101', phone='0249110001',
+            hall='Unity Hall', verified=True, role='customer', account_type='customer',
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='fin11.vendor@st.knust.edu.gh', password='Password123',
+            full_name='Fin11 Vendor', reference_id='20891102', phone='0249110002',
+            hall='Unity Hall', verified=True, role='vendor', account_type='vendor', is_vendor=True,
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_fin11', user=cls.vendor_user, name='Fin11 Kitchen',
+            hall='Unity Hall', open=True, active=True,
+        )
+        cls.meal = Meal.objects.create(
+            id='m_fin11', vendor=cls.vendor, name='Jollof Pack',
+            price=Decimal('25.00'), cat='Mains', left=100, on=True,
+        )
+        cls.collected_order = Order.objects.create(
+            id='STW-FIN11-REV', customer=cls.student, email=cls.student.email,
+            vendor=cls.vendor, vendor_name=cls.vendor.name,
+            subtotal=Decimal('25.00'), fee=Decimal('1.25'), total=Decimal('26.25'),
+            payment_status='released', prep_stage='collected',
+            collected_at=timezone.now(), handoff_code='',
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+        self.client.force_authenticate(user=self.student)
+
+    def test_order_rejects_fractional_bool_and_duplicate_line_qty_overflow(self):
+        for bad_qty in (1.9, '1.5', True):
+            r = self.client.post('/api/orders/', {
+                'lines': [{'mealId': self.meal.id, 'qty': bad_qty}],
+                'area': 'Unity Hall', 'pickupDay': '2026-12-01',
+            }, format='json')
+            self.assertEqual(r.status_code, 400, f'Expected 400 for qty={bad_qty!r}, got {r.status_code}')
+
+        # Two lines for the same meal totaling 60 (> 50 max per dish)
+        r_split = self.client.post('/api/orders/', {
+            'lines': [
+                {'mealId': self.meal.id, 'qty': 30},
+                {'mealId': self.meal.id, 'qty': 30},
+            ],
+            'area': 'Unity Hall', 'pickupDay': '2026-12-01',
+        }, format='json')
+        self.assertEqual(r_split.status_code, 400)
+        self.meal.refresh_from_db()
+        self.assertEqual(self.meal.left, 100)
+
+    def test_review_rejects_out_of_range_float_and_bool_ratings(self):
+        for bad_rating in (0, 6, 4.5, '3.5', True):
+            r = self.client.post('/api/reviews/', {
+                'orderId': self.collected_order.id,
+                'rating': bad_rating,
+                'text': 'Test review',
+            }, format='json')
+            self.assertEqual(r.status_code, 400, f'Expected 400 for rating={bad_rating!r}, got {r.status_code}')
+        self.assertFalse(Review.objects.filter(order_id=self.collected_order.id).exists())
+
+    def test_me_patch_rejects_bool_and_float_prep_time(self):
+        for bad_prep in (True, 15.5, '15.5'):
+            r = self.client.patch('/api/auth/me/', {'prep': bad_prep}, format='json')
+            self.assertEqual(r.status_code, 400, f'Expected 400 for prep={bad_prep!r}, got {r.status_code}')

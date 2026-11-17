@@ -224,6 +224,12 @@ def _safe_price(raw, field='price') -> Decimal:
 def _safe_int(raw, lo: int, hi: int, field: str, default=None) -> int:
     if raw in (None, '') and default is not None:
         return default
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise ValidationError({field: f'{field} must be a whole number.'})
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not re.match(r'^-?\d+$', raw):
+            raise ValidationError({field: f'{field} must be a whole number.'})
     try:
         val = int(raw)
     except (TypeError, ValueError):
@@ -718,13 +724,11 @@ def me_view(request):
         changed_fields.append('bio')
     if 'prep' in data:
         try:
-            prep_val = int(data['prep'])
-            if not (1 <= prep_val <= 240):
-                return Response({'errors': {'prep': 'Prep time must be between 1 and 240.'}}, status=status.HTTP_400_BAD_REQUEST)
+            prep_val = _safe_int(data.get('prep'), 1, 240, 'prep')
             user.prep = prep_val
             changed_fields.append('prep')
-        except (ValueError, TypeError):
-            return Response({'errors': {'prep': 'Prep time must be a number.'}}, status=status.HTTP_400_BAD_REQUEST)
+        except ValidationError:
+            return Response({'errors': {'prep': 'Prep time must be a whole number between 1 and 240.'}}, status=status.HTTP_400_BAD_REQUEST)
     if 'payout' in data:
         user.payout = validate_ghana_phone(data['payout'])
         changed_fields.append('payout')
@@ -1087,10 +1091,8 @@ def orders_view(request):
         if 'mealId' not in line or 'qty' not in line:
             return Response({'errors': {'lines': f'Item at position {idx + 1} is missing mealId or qty.'}}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            qty = int(line['qty'])
-        except (ValueError, TypeError):
-            return Response({'errors': {'lines': f'Item at position {idx + 1} has an invalid quantity.'}}, status=status.HTTP_400_BAD_REQUEST)
-        if qty < 1 or qty > 50:
+            qty = _safe_int(line['qty'], 1, 50, 'qty')
+        except ValidationError:
             return Response({'errors': {'lines': f'Item at position {idx + 1} has an invalid quantity.'}}, status=status.HTTP_400_BAD_REQUEST)
         meal_id_str = str(line['mealId'])[:64]
         # Authoritative lookup: price, name and vendor ALWAYS come from the database.
@@ -1104,6 +1106,8 @@ def orders_view(request):
             return Response({'errors': {'lines': 'A tray can only contain food from one kitchen.'}}, status=status.HTTP_400_BAD_REQUEST)
         line_price = Decimal(str(db_meal.price)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         requested_qty[db_meal.id] = requested_qty.get(db_meal.id, 0) + qty
+        if requested_qty[db_meal.id] > 50:
+            return Response({'errors': {'lines': 'Cannot order more than 50 portions of a single dish.'}}, status=status.HTTP_400_BAD_REQUEST)
         validated_lines.append({
             'mealId': db_meal.id,
             'name': db_meal.name,
@@ -1977,10 +1981,9 @@ def create_review_view(request):
     order_id = request.data.get('orderId')
     _reviewer = request.user
     try:
-        rating = int(request.data.get('rating', 5))
-    except (TypeError, ValueError):
-        return Response({'errors': {'rating': 'Rating must be 1 to 5 stars.'}}, status=status.HTTP_400_BAD_REQUEST)
-    rating = max(1, min(5, rating))
+        rating = _safe_int(request.data.get('rating', 5), 1, 5, 'rating', default=5)
+    except ValidationError:
+        return Response({'errors': {'rating': 'Rating must be a whole number from 1 to 5 stars.'}}, status=status.HTTP_400_BAD_REQUEST)
     raw_tags = request.data.get('tags', [])
     tags = [escape(str(t).strip())[:40] for t in raw_tags[:8] if str(t).strip()] if isinstance(raw_tags, list) else []
     text = escape(str(request.data.get('text', '') or '').strip())[:1000]
