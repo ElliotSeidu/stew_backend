@@ -10,6 +10,7 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.db import models, transaction
 from django.db.models import Avg, Count, Sum, Min, Max, Exists, OuterRef
+from django.db.models.functions import ExtractWeekDay
 from django.utils import timezone as dj_timezone
 from django.utils.html import strip_tags
 from rest_framework import status
@@ -127,8 +128,7 @@ def _restore_order_stock(order) -> None:
         Meal.objects.filter(id=meal_id).update(left=models.F('left') + qty_by_meal[meal_id])
 
 
-def _bound_queryset(request, queryset, default_limit: int = 200, max_limit: int = 500):
-    """Slices a queryset using optional ?limit=&offset= params while keeping a hard upper bound."""
+def _parse_pagination(request, default_limit: int = 200, max_limit: int = 500):
     try:
         raw_limit = int(request.query_params.get('limit', default_limit))
     except (TypeError, ValueError):
@@ -137,9 +137,44 @@ def _bound_queryset(request, queryset, default_limit: int = 200, max_limit: int 
         raw_offset = int(request.query_params.get('offset', 0))
     except (TypeError, ValueError):
         raw_offset = 0
-    limit = max(1, min(max_limit, raw_limit))
-    offset = max(0, raw_offset)
+    return max(1, min(max_limit, raw_limit)), max(0, raw_offset)
+
+
+def _bound_queryset(request, queryset, default_limit: int = 200, max_limit: int = 500):
+    """Slices a queryset using optional ?limit=&offset= params while keeping a hard upper bound."""
+    limit, offset = _parse_pagination(request, default_limit=default_limit, max_limit=max_limit)
     return queryset[offset:offset + limit]
+
+
+def _paginated_response(request, queryset, serializer_cls, default_limit: int = 200, max_limit: int = 500, context=None) -> Response:
+    """Returns serialized slice with X-Total-Count / X-Truncated headers or ?envelope=true wrapper."""
+    limit, offset = _parse_pagination(request, default_limit=default_limit, max_limit=max_limit)
+    total = queryset.count()
+    items = list(queryset[offset:offset + limit])
+    truncated = (offset + len(items)) < total
+    serialized = serializer_cls(items, many=True, context=context or {}).data
+    wants_envelope = str(request.query_params.get('envelope', '')).strip().lower() in ('1', 'true', 'yes')
+    payload = {
+        'results': serialized,
+        'total': total,
+        'limit': limit,
+        'offset': offset,
+        'truncated': truncated,
+    } if wants_envelope else serialized
+    resp = Response(payload)
+    resp['X-Total-Count'] = str(total)
+    resp['X-Result-Limit'] = str(limit)
+    resp['X-Result-Offset'] = str(offset)
+    resp['X-Truncated'] = 'true' if truncated else 'false'
+    return resp
+
+
+_WEEKDAY_LABELS = {2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat', 1: 'Sun'}
+_ORDERED_DAY_KEYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+
+def _zero_sales_by_day():
+    return [{'d': d, 'v': 0.0} for d in _ORDERED_DAY_KEYS]
 
 
 def _sanitize_media_url(raw_val, max_len: int = 300000) -> str:
@@ -730,8 +765,7 @@ def delete_account_view(request):
 @permission_classes([AllowAny])
 def vendors_list_view(request):
     """Lists all active student kitchen vendors."""
-    vendors = _bound_queryset(request, Vendor.objects.filter(active=True))
-    return Response(VendorSerializer(vendors, many=True).data)
+    return _paginated_response(request, Vendor.objects.filter(active=True), VendorSerializer)
 
 
 @api_view(['GET'])
@@ -769,13 +803,16 @@ def meals_list_view(request):
             if not auth_res:
                 return Response({'message': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
             user, _ = auth_res
-            meals = _bound_queryset(
+            return _paginated_response(
                 request,
                 Meal.objects.select_related('vendor').filter(vendor__user=user).order_by('-created_at'),
+                MealSerializer,
             )
-            return Response(MealSerializer(meals, many=True).data)
-        meals = _bound_queryset(request, Meal.objects.select_related('vendor').filter(on=True, vendor__active=True))
-        return Response(MealSerializer(meals, many=True).data)
+        return _paginated_response(
+            request,
+            Meal.objects.select_related('vendor').filter(on=True, vendor__active=True),
+            MealSerializer,
+        )
 
     # Adding a meal requires verified, active vendor authentication
     auth_header = request.headers.get('Authorization')
@@ -1005,8 +1042,7 @@ def orders_view(request):
             ).order_by('-created_at')
         # Annotate whether each order has a review to avoid N+1 queries in OrderSerializer.get_reviewed
         orders = orders.annotate(_has_review=Exists(Review.objects.filter(order_id=OuterRef('pk'))))
-        orders = _bound_queryset(request, orders)
-        return Response(OrderSerializer(orders, many=True, context={'request': request}).data)
+        return _paginated_response(request, orders, OrderSerializer, context={'request': request})
 
     # POST: Place order
     if not check_rate_limit(f"order_create_{user.id}", limit=20, window_seconds=60):
@@ -1415,13 +1451,25 @@ def paystack_webhook_view(request):
 @permission_classes([IsVendorUser])
 def payouts_ledger_view(request):
     """
-    Calculates escrow earnings ledger for a chef:
-    held vs released totals. Menu price goes to chef; 5% fee belongs to STEW.
+    Calculates escrow earnings ledger and dashboard aggregates over the full queryset:
+    held vs released totals, weekly sales breakdown, stage counts, and admin overview KPIs.
     """
     user = request.user
     vendor = Vendor.objects.filter(user=user).first()
     if not vendor and not is_platform_admin(user):
-        return Response({'held': 0, 'released': 0, 'heldCount': 0, 'releasedCount': 0, 'collected': 0, 'fees': 0})
+        return Response({
+            'held': 0,
+            'released': 0,
+            'heldCount': 0,
+            'releasedCount': 0,
+            'collected': 0,
+            'fees': 0,
+            'weekTotal': 0.0,
+            'salesByDay': _zero_sales_by_day(),
+            'inProgressCount': 0,
+            'readyCount': 0,
+            'newCount': 0,
+        })
 
     orders_query = Order.objects.filter(cancelled_at__isnull=True)
     if not is_platform_admin(user):
@@ -1436,15 +1484,48 @@ def payouts_ledger_view(request):
     )
     fees_agg = paid_qs.aggregate(fees_sum=Sum('fee'), total_collected=Sum('total'))
 
-    return Response({
+    week_cutoff = dj_timezone.now() - timedelta(days=7)
+    week_qs = paid_qs.filter(created_at__gte=week_cutoff)
+    week_total = round(float(week_qs.aggregate(total_sub=Sum('subtotal'))['total_sub'] or 0), 2)
+    day_totals = {d: 0.0 for d in _ORDERED_DAY_KEYS}
+    for row in week_qs.annotate(wd=ExtractWeekDay('created_at')).values('wd').annotate(day_sum=Sum('subtotal')):
+        label = _WEEKDAY_LABELS.get(row['wd'])
+        if label:
+            day_totals[label] = round(float(row['day_sum'] or 0), 2)
+    sales_by_day = [{'d': d, 'v': day_totals[d]} for d in _ORDERED_DAY_KEYS]
+
+    stage_counts = orders_query.aggregate(
+        in_progress=Count('id', filter=~models.Q(prep_stage='collected')),
+        ready=Count('id', filter=models.Q(prep_stage='ready')),
+        new=Count('id', filter=models.Q(prep_stage='accepted')),
+    )
+
+    payload = {
         'held': round(float(held_agg['held_sum'] or 0), 2),
         'released': round(float(released_agg['released_sum'] or 0), 2),
         'heldCount': held_agg['held_count'] or 0,
         'releasedCount': released_agg['released_count'] or 0,
         'collected': round(float(fees_agg['total_collected'] or 0), 2),
         'fees': round(float(fees_agg['fees_sum'] or 0), 2),
+        'weekTotal': week_total,
+        'salesByDay': sales_by_day,
+        'inProgressCount': stage_counts['in_progress'] or 0,
+        'readyCount': stage_counts['ready'] or 0,
+        'newCount': stage_counts['new'] or 0,
         'note': "STEW holds each payment until the student confirms collection, then releases it to you. You keep the full menu price; the 5% fee is added to the student's total."
-    })
+    }
+
+    if is_platform_admin(user):
+        today_start = dj_timezone.localtime(dj_timezone.now()).replace(hour=0, minute=0, second=0, microsecond=0)
+        payload.update({
+            'ordersToday': Order.objects.filter(created_at__gte=today_start).count(),
+            'activeVendorsCount': Vendor.objects.filter(active=True).count(),
+            'pendingVendorsCount': Vendor.objects.filter(active=False).count(),
+            'openDisputesCount': SupportCase.objects.count(),
+            'highPriorityDisputesCount': SupportCase.objects.filter(priority='high').count(),
+        })
+
+    return Response(payload)
 
 
 # ============================================================================
@@ -1777,8 +1858,7 @@ def vendor_reviews_view(request, vendorId):
     qs = Review.objects.filter(vendor__id=vendorId)
     if not allow_hidden:
         qs = qs.exclude(moderation_status='hidden')
-    qs = _bound_queryset(request, qs)
-    return Response(ReviewSerializer(qs, many=True).data)
+    return _paginated_response(request, qs, ReviewSerializer)
 
 
 @api_view(['POST'])
@@ -1839,8 +1919,7 @@ def create_review_view(request):
 @permission_classes([IsAdminUser])
 def moderation_queue_view(request):
     """Admin endpoint for pending reviews."""
-    qs = _bound_queryset(request, Review.objects.filter(moderation_status='pending'))
-    return Response(ReviewSerializer(qs, many=True).data)
+    return _paginated_response(request, Review.objects.filter(moderation_status='pending'), ReviewSerializer)
 
 
 @api_view(['POST'])
@@ -1912,8 +1991,7 @@ def vendor_compliance_view(request):
 @permission_classes([IsAdminUser])
 def admin_compliance_view(request):
     """Admin inspects all vendor food hygiene permits."""
-    qs = _bound_queryset(request, Compliance.objects.all())
-    return Response(ComplianceSerializer(qs, many=True).data)
+    return _paginated_response(request, Compliance.objects.all(), ComplianceSerializer)
 
 
 # ============================================================================
@@ -1926,8 +2004,7 @@ def admin_compliance_view(request):
 def payout_batches_view(request):
     """Admin view for aggregate vendor payout batches."""
     if request.method == 'GET':
-        batches = _bound_queryset(request, PayoutBatch.objects.all().order_by('-created_at'))
-        return Response(PayoutBatchSerializer(batches, many=True).data)
+        return _paginated_response(request, PayoutBatch.objects.all().order_by('-created_at'), PayoutBatchSerializer)
 
     # POST: Create a new payout batch under row lock so concurrent calls cannot double-settle
     batch_id = _unique_id(PayoutBatch, 'PAY')
@@ -1985,12 +2062,8 @@ def support_cases_view(request):
     """Customer or Admin support tickets."""
     user = request.user
     if request.method == 'GET':
-        if is_platform_admin(user):
-            cases = SupportCase.objects.all().order_by('-created_at')
-        else:
-            cases = SupportCase.objects.filter(user=user).order_by('-created_at')
-        cases = _bound_queryset(request, cases)
-        return Response(SupportCaseSerializer(cases, many=True).data)
+        cases = SupportCase.objects.all().order_by('-created_at') if is_platform_admin(user) else SupportCase.objects.filter(user=user).order_by('-created_at')
+        return _paginated_response(request, cases, SupportCaseSerializer)
 
     data = request.data
     if not check_rate_limit(f"support_{user.id}", limit=10, window_seconds=3600):
@@ -2074,8 +2147,7 @@ def support_case_resolve_view(request, code):
 @permission_classes([IsAdminUser])
 def admin_vendors_view(request):
     """Admin list of all kitchens (both active and inactive)."""
-    vendors = _bound_queryset(request, Vendor.objects.all().order_by('-created_at'))
-    return Response(VendorSerializer(vendors, many=True).data)
+    return _paginated_response(request, Vendor.objects.all().order_by('-created_at'), VendorSerializer)
 
 
 @api_view(['PATCH'])
@@ -2103,8 +2175,7 @@ def admin_vendor_detail_view(request, pk):
 @permission_classes([IsAdminUser])
 def admin_users_view(request):
     """Admin list of all student accounts."""
-    users = _bound_queryset(request, User.objects.all().order_by('-created_at'))
-    return Response(AdminUserSerializer(users, many=True).data)
+    return _paginated_response(request, User.objects.all().order_by('-created_at'), AdminUserSerializer)
 
 
 @api_view(['PATCH'])
@@ -2133,8 +2204,7 @@ def admin_user_detail_view(request, pk):
 @permission_classes([IsAdminUser])
 def admin_audit_view(request):
     """Admin read-only audit log feed."""
-    entries = AuditEntry.objects.all().order_by('-at')[:200]
-    return Response(AuditEntrySerializer(entries, many=True).data)
+    return _paginated_response(request, AuditEntry.objects.all().order_by('-at'), AuditEntrySerializer)
 
 
 # ============================================================================

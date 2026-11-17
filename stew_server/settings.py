@@ -184,6 +184,12 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken',
     'x-requested-with',
 ]
+CORS_EXPOSE_HEADERS = [
+    'X-Total-Count',
+    'X-Result-Limit',
+    'X-Result-Offset',
+    'X-Truncated',
+]
 
 # ---------------------------------------------------------------------------
 # Security headers — always-on baseline; production adds HTTPS-specific headers

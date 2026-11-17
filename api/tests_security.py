@@ -1159,3 +1159,93 @@ class PostgresLockingAndConcurrencyTests(TransactionTestCase):
 
         race3_statuses = _race([_batch_race, _batch_race])
         self.assertEqual(sorted(race3_statuses), [201, 400], race3_statuses)
+
+
+class PaginationAndAggregateTests(TestCase):
+    """
+    FIN-05: List endpoints expose pagination headers/envelope (including admin audit)
+    and payout/dashboard aggregates compute totals over the full queryset, not the
+    truncated page slice.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_superuser(
+            email='pag.admin@st.knust.edu.gh', password='AdminPassword123',
+            full_name='Pag Admin',
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='pag.vendor@st.knust.edu.gh', password='Password123',
+            verified=True, is_vendor=True, role='vendor', account_type='vendor',
+        )
+        cls.student = User.objects.create_user(
+            email='pag.cust@st.knust.edu.gh', password='Password123',
+            verified=True,
+        )
+        cls.vendor = Vendor.objects.create(id='v-pag-1', user=cls.vendor_user, name='Pag Kitchen', hall='Unity', active=True, open=True)
+        cls.meals = [
+            Meal.objects.create(id=f'm-pag-{i}', vendor=cls.vendor, name=f'Meal {i}', price=Decimal('10.00'), left=5, on=True)
+            for i in range(4)
+        ]
+        cls.orders = []
+        for i in range(3):
+            cls.orders.append(Order.objects.create(
+                id=f'STW-PAG-{i}', customer=cls.student, email=cls.student.email,
+                vendor=cls.vendor, vendor_name=cls.vendor.name,
+                subtotal=Decimal('15.00'), fee=Decimal('0.75'), total=Decimal('15.75'),
+                payment_status='paid', prep_stage='ready' if i < 2 else 'accepted',
+                handoff_code=f'12345{i}', lines=[{'mealId': cls.meals[0].id, 'qty': 1}],
+            ))
+        from api.models import AuditEntry
+        for i in range(5):
+            AuditEntry.objects.create(id=f'AUD-PAG-{i}', actor=cls.admin.email, action='test_evt', entity_type='order', entity_id=f'STW-PAG-{i%3}')
+        SupportCase.objects.create(code='CASE-PAG-1', user=cls.student, type='safety', priority='high')
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_list_endpoints_return_pagination_headers_and_optional_envelope_and_audit_paginates(self):
+        res_meals = self.client.get('/api/meals/?limit=2&offset=1')
+        self.assertEqual(res_meals.status_code, 200)
+        self.assertEqual(len(res_meals.data), 2)
+        self.assertEqual(res_meals['X-Total-Count'], '4')
+        self.assertEqual(res_meals['X-Result-Limit'], '2')
+        self.assertEqual(res_meals['X-Result-Offset'], '1')
+        self.assertEqual(res_meals['X-Truncated'], 'true')
+
+        res_env = self.client.get('/api/meals/?limit=2&offset=2&envelope=true')
+        self.assertEqual(res_env.status_code, 200)
+        self.assertIsInstance(res_env.data, dict)
+        self.assertEqual(res_env.data['total'], 4)
+        self.assertEqual(res_env.data['limit'], 2)
+        self.assertEqual(res_env.data['offset'], 2)
+        self.assertFalse(res_env.data['truncated'])
+        self.assertEqual(len(res_env.data['results']), 2)
+
+        self.client.force_authenticate(user=self.admin)
+        res_audit = self.client.get('/api/admin/audit/?limit=2&offset=0')
+        self.assertEqual(res_audit.status_code, 200)
+        self.assertEqual(len(res_audit.data), 2)
+        self.assertEqual(res_audit['X-Truncated'], 'true')
+        self.assertGreaterEqual(int(res_audit['X-Total-Count']), 5)
+
+    def test_payout_ledger_returns_full_set_aggregates_for_vendor_and_admin(self):
+        self.client.force_authenticate(user=self.vendor_user)
+        v_ledger = self.client.get('/api/payouts/?limit=1')
+        self.assertEqual(v_ledger.status_code, 200)
+        self.assertEqual(v_ledger.data['held'], 45.0)
+        self.assertEqual(v_ledger.data['heldCount'], 3)
+        self.assertEqual(v_ledger.data['weekTotal'], 45.0)
+        self.assertEqual(v_ledger.data['readyCount'], 2)
+        self.assertEqual(v_ledger.data['newCount'], 1)
+        self.assertEqual(v_ledger.data['inProgressCount'], 3)
+        self.assertEqual(len(v_ledger.data['salesByDay']), 7)
+        self.assertAlmostEqual(sum(d['v'] for d in v_ledger.data['salesByDay']), 45.0, places=2)
+
+        self.client.force_authenticate(user=self.admin)
+        a_ledger = self.client.get('/api/payouts/?limit=1')
+        self.assertEqual(a_ledger.status_code, 200)
+        self.assertGreaterEqual(a_ledger.data['ordersToday'], 3)
+        self.assertGreaterEqual(a_ledger.data['activeVendorsCount'], 1)
+        self.assertGreaterEqual(a_ledger.data['openDisputesCount'], 1)
+        self.assertGreaterEqual(a_ledger.data['highPriorityDisputesCount'], 1)
