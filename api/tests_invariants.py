@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from api.models import User, Vendor, Meal, Order, Review
+from api.models import User, Vendor, Meal, Order, Review, SupportCase
 from api.security import generate_jwt_token, _RATE_LIMIT_CACHE
 from api.views import _release_escrow, _recompute_vendor_rating
 
@@ -76,6 +76,136 @@ def _make_paid_order(customer, vendor, meal, oid='STW-INV1', subtotal=40.0):
         settlement_status='pending',
         messages=[],
     )
+
+
+class SupportCaseRefundBugTest(TestCase):
+    """
+    Regression test for support_case_resolve_view.
+
+    The old code accessed Order.status, Order.payment, and Order.cancel_reason —
+    none of which exist on the Order model. The fix uses the correct fields:
+    Order.cancelled_at and Order.payment_status.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_superuser(
+            email='admin.inv@st.knust.edu.gh',
+            password='AdminPassword123',
+            full_name='Admin Inv',
+        )
+        cls.admin_token = generate_jwt_token(cls.admin)
+        cls.student = _make_student('inv.student@st.knust.edu.gh', ref='20899002')
+        cls.vendor_user = _make_student('inv.vendor@st.knust.edu.gh', ref='20899003', role='vendor')
+        cls.vendor = _make_vendor(cls.vendor_user, vid='v_inv2', name='Inv Kitchen')
+        cls.meal = _make_meal(cls.vendor, mid='m_inv2')
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_refund_action_cancels_paid_order_correctly(self):
+        """Admin refund via support case must set cancelled_at and update payment_status."""
+        order = _make_paid_order(
+            self.student, self.vendor, self.meal,
+            oid='STW-REFT1', subtotal=40.0,
+        )
+        self.assertIsNone(order.cancelled_at)
+        self.assertEqual(order.payment_status, 'paid')
+
+        case = SupportCase.objects.create(
+            code='CASE-REFT1',
+            user=self.student,
+            type='wrong_item',
+            order=order.id,
+            priority='normal',
+            note='Wrong food delivered.',
+        )
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        res = self.client.post(
+            f'/api/support/cases/{case.code}/resolve/',
+            {'action': 'refund'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['ok'])
+
+        order.refresh_from_db()
+        self.assertIsNotNone(order.cancelled_at)
+        self.assertIn(order.payment_status, ('refunded', 'refund_pending'))
+        self.assertFalse(SupportCase.objects.filter(code='CASE-REFT1').exists())
+
+    def test_refund_on_already_cancelled_order_is_idempotent(self):
+        """Refund action on an already-cancelled order must not raise an error."""
+        order = _make_paid_order(
+            self.student, self.vendor, self.meal,
+            oid='STW-REFT2', subtotal=35.0,
+        )
+        order.cancelled_at = timezone.now()
+        order.payment_status = 'refunded'
+        order.save(update_fields=['cancelled_at', 'payment_status'])
+
+        case = SupportCase.objects.create(
+            code='CASE-REFT2',
+            user=self.student,
+            type='wrong_item',
+            order=order.id,
+            priority='normal',
+            note='Already cancelled.',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        res = self.client.post(
+            f'/api/support/cases/{case.code}/resolve/',
+            {'action': 'refund'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.payment_status, 'refunded')
+
+    def test_dismiss_action_does_not_touch_order(self):
+        """Dismiss action must not modify the linked order."""
+        order = _make_paid_order(
+            self.student, self.vendor, self.meal,
+            oid='STW-REFT3', subtotal=30.0,
+        )
+        case = SupportCase.objects.create(
+            code='CASE-REFT3',
+            user=self.student,
+            type='late_delivery',
+            order=order.id,
+            priority='normal',
+            note='Order was late but correct.',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        res = self.client.post(
+            f'/api/support/cases/{case.code}/resolve/',
+            {'action': 'dismiss'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        order.refresh_from_db()
+        self.assertIsNone(order.cancelled_at)
+        self.assertEqual(order.payment_status, 'paid')
+
+    def test_non_admin_cannot_resolve_support_case(self):
+        """Students must not be able to resolve support cases."""
+        case = SupportCase.objects.create(
+            code='CASE-REFT4',
+            user=self.student,
+            type='wrong_item',
+            order='',
+            priority='normal',
+            note='A grievance.',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.student)}')
+        res = self.client.post(
+            f'/api/support/cases/{case.code}/resolve/',
+            {'action': 'dismiss'},
+            format='json',
+        )
+        self.assertIn(res.status_code, (401, 403))
 
 
 class EscrowHelperTest(TestCase):

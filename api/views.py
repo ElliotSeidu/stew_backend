@@ -1853,22 +1853,21 @@ def support_case_resolve_view(request, code):
     if action not in ('refund', 'dismiss'):
         return Response({'message': 'Invalid resolution action.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    now_iso = dj_timezone.now().isoformat()
     if action == 'refund' and case.order:
         with transaction.atomic():
             order = Order.objects.select_for_update().filter(id=case.order).first()
-            if order and order.status != 'cancelled':
-                order.status = 'cancelled'
-                order.cancel_reason = f"Admin refund on case {case.code}"
-                order.cancelled_at = now_iso
-                payment = order.payment or {}
-                if payment.get('status') in ('paid', 'released'):
-                    payment['status'] = 'refunded'
-                    payment['refundedAt'] = now_iso
+            if order and not order.cancelled_at:
+                now = dj_timezone.now()
+                order.cancelled_at = now
+                was_paid = order.payment_status in ('paid', 'released')
+                if was_paid and order.settlement_status == 'released':
+                    order.payment_status = 'refund_pending'
+                elif was_paid:
+                    order.payment_status = 'refunded'
                 else:
-                    payment['status'] = 'cancelled'
-                order.payment = payment
-                order.save()
+                    order.payment_status = 'cancelled'
+                order.save(update_fields=['cancelled_at', 'payment_status'])
+                record_audit(request.user.email, f'case_refund_order_cancelled', 'order', order.id, {'case': case.code})
 
     record_audit(request.user.email, f'case_{action}', 'support_case', case.code, {'order': case.order, 'vendor': case.vendor})
     case.delete()
