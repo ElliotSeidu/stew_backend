@@ -23,6 +23,7 @@ class UserSerializer(serializers.ModelSerializer):
             'area', 'hall', 'phone', 'referenceId', 'bio',
             'prep', 'payout', 'logo', 'verified', 'vendorId', 'kitchenOpen'
         ]
+        read_only_fields = fields
 
     def _get_vendor(self, obj):
         """Returns the first vendor profile, cached per serializer call to avoid N+1."""
@@ -73,6 +74,7 @@ class VendorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Vendor
         fields = ['id', 'name', 'hall', 'rating', 'reviews', 'open', 'prep', 'bio', 'logo', 'active']
+        read_only_fields = fields
 
     def get_rating(self, obj):
         if (obj.reviews or 0) <= 0 or (obj.rating or 0) <= 0:
@@ -96,6 +98,7 @@ class MealSerializer(serializers.ModelSerializer):
             'price', 'cat', 'left', 'kinds', 'image', 'portion',
             'rating', 'reviews', 'open', 'batch', 'on'
         ]
+        read_only_fields = fields
 
     def get_rating(self, obj):
         v = obj.vendor
@@ -108,6 +111,7 @@ class OrderSerializer(serializers.ModelSerializer):
     vendorId = serializers.CharField(source='vendor.id', read_only=True)
     vendorName = serializers.CharField(source='vendor_name', read_only=True)
     customer = serializers.CharField(source='customer_name')
+    email = serializers.SerializerMethodField()
     subtotal = serializers.FloatField()
     fee = serializers.FloatField()
     total = serializers.FloatField()
@@ -137,6 +141,20 @@ class OrderSerializer(serializers.ModelSerializer):
             'prepStage', 'prepAt', 'status', 'meetup', 'messages', 'createdAt',
             'collectedAt', 'collectedVia', 'cancelledAt', 'payoutBatchId', 'reviewed'
         ]
+        read_only_fields = fields
+
+    def _is_owner_or_admin(self, obj) -> bool:
+        request = self.context.get('request')
+        if not (request and hasattr(request, 'user') and request.user.is_authenticated):
+            return False
+        return bool(
+            (obj.customer_id and str(obj.customer_id) == str(request.user.id))
+            or obj.email == request.user.email
+            or is_platform_admin(request.user)
+        )
+
+    def get_email(self, obj):
+        return obj.email if self._is_owner_or_admin(obj) else None
 
     def get_reviewed(self, obj):
         # Use annotation from orders_view queryset when available (avoids N+1 on list views)
@@ -147,20 +165,14 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_handoffCode(self, obj):
         if obj.prep_stage == 'collected' or obj.collected_at or obj.cancelled_at:
             return None
-        request = self.context.get('request')
-        if request and hasattr(request, 'user') and request.user.is_authenticated:
-            if obj.customer == request.user or obj.email == request.user.email or is_platform_admin(request.user):
-                return obj.handoff_code
-            return None
-        # No authenticated request context: never leak the code
-        return None
+        return obj.handoff_code if self._is_owner_or_admin(obj) else None
 
     def get_payment(self, obj):
         paid_at_ts = int(obj.paid_at.timestamp() * 1000) if obj.paid_at else None
         return {
             'status': obj.payment_status,
             'provider': obj.payment_provider,
-            'reference': obj.payment_reference,
+            'reference': obj.payment_reference if self._is_owner_or_admin(obj) else None,
             'paidAt': paid_at_ts,
         }
 
@@ -204,6 +216,7 @@ class ReviewSerializer(serializers.ModelSerializer):
             'id', 'orderId', 'vendorId', 'vendorName', 'rating',
             'tags', 'text', 'moderationStatus', 'moderationReason', 'createdAt'
         ]
+        read_only_fields = fields
 
     def get_createdAt(self, obj):
         return int(obj.created_at.timestamp() * 1000)
@@ -220,6 +233,7 @@ class ComplianceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Compliance
         fields = ['vendorId', 'vendorName', 'type', 'number', 'issuedAt', 'expiresAt', 'reviewedBy', 'updatedAt']
+        read_only_fields = fields
 
     def get_updatedAt(self, obj):
         return int(obj.updated_at.timestamp() * 1000)
@@ -241,6 +255,7 @@ class PayoutBatchSerializer(serializers.ModelSerializer):
             'periodStart', 'periodEnd', 'provider', 'providerReference',
             'createdAt', 'paidAt'
         ]
+        read_only_fields = fields
 
     def get_periodStart(self, obj):
         return int(obj.period_start.timestamp() * 1000) if obj.period_start else None
@@ -264,6 +279,7 @@ class SupportCaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupportCase
         fields = ['id', 'code', 'type', 'order', 'orderId', 'vendor', 'priority', 'note', 'description', 'createdAt']
+        read_only_fields = fields
 
     def get_createdAt(self, obj):
         return int(obj.created_at.timestamp() * 1000)
@@ -277,6 +293,7 @@ class AuditEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = AuditEntry
         fields = ['id', 'actor', 'action', 'entityType', 'entityId', 'extra', 'at']
+        read_only_fields = fields
 
     def get_at(self, obj):
         return int(obj.at.timestamp() * 1000)
@@ -291,6 +308,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'name', 'email', 'role', 'accountType', 'isAdmin', 'active', 'verified', 'hall']
+        read_only_fields = fields
 
     def get_name(self, obj):
         return obj.full_name or obj.email.split('@')[0]

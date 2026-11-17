@@ -899,7 +899,9 @@ def meal_detail_view(request, pk):
         return Response({'message': 'Meal not found'}, status=status.HTTP_404_NOT_FOUND)
 
     # Permission check: must belong to user's vendor unless admin
-    if not is_platform_admin(request.user) and meal.vendor.user != request.user:
+    if not is_platform_admin(request.user) and (
+        not meal.vendor.user_id or str(meal.vendor.user_id) != str(request.user.id)
+    ):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
     blocked = _inactive_vendor_response(request.user, meal.vendor)
     if blocked:
@@ -1199,10 +1201,7 @@ def order_detail_view(request, pk):
     except Order.DoesNotExist:
         return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    user = request.user
-    is_owner = (order.customer == user or order.email == user.email)
-    is_order_vendor = (order.vendor and order.vendor.user == user)
-    if not (is_owner or is_order_vendor or is_platform_admin(user)):
+    if not _is_order_participant(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     return Response(OrderSerializer(order, context={'request': request}).data)
@@ -2330,16 +2329,27 @@ def admin_audit_view(request):
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsStudentUser])
 def subscribe_push_view(request):
-    """Subscribes student device to push notifications."""
+    """Subscribes student device to push notifications without allowing cross-user endpoint hijacking."""
     if not check_rate_limit(f"push_sub_{request.user.id}", limit=15, window_seconds=60):
         return Response({'message': 'Too many subscription requests. Please wait.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     endpoint = str(request.data.get('endpoint') or '').strip()[:500]
     if not endpoint or not endpoint.startswith('https://'):
         return Response({'message': 'Push subscription endpoint must use https://'}, status=status.HTTP_400_BAD_REQUEST)
-    PushSubscription.objects.update_or_create(
-        endpoint=endpoint,
-        defaults={'user': request.user, 'keys': request.data.get('keys', {})}
-    )
+    keys = request.data.get('keys', {})
+    if not isinstance(keys, dict):
+        return Response({'message': 'Push subscription keys must be an object.'}, status=status.HTTP_400_BAD_REQUEST)
+    with transaction.atomic():
+        existing = PushSubscription.objects.select_for_update().filter(endpoint=endpoint).first()
+        if existing and str(existing.user_id) != str(request.user.id):
+            return Response(
+                {'message': 'Push endpoint is already registered to another account.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if existing:
+            existing.keys = keys
+            existing.save(update_fields=['keys'])
+        else:
+            PushSubscription.objects.create(endpoint=endpoint, user=request.user, keys=keys)
     return Response({'ok': True}, status=status.HTTP_201_CREATED)
 
 

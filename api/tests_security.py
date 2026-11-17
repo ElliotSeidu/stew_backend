@@ -17,7 +17,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from api.models import User, Vendor, Meal, Order, PayoutBatch, Review, SupportCase
+from api.models import User, Vendor, Meal, Order, PayoutBatch, PushSubscription, Review, SupportCase
 from api.security import generate_jwt_token, hash_token, _RATE_LIMIT_CACHE
 
 
@@ -1691,3 +1691,111 @@ class QuantityAndRatingValidationTests(TestCase):
         for bad_prep in (True, 15.5, '15.5'):
             r = self.client.patch('/api/auth/me/', {'prep': bad_prep}, format='json')
             self.assertEqual(r.status_code, 400, f'Expected 400 for prep={bad_prep!r}, got {r.status_code}')
+
+
+class IDORAndSerializerExposureTests(TestCase):
+    """
+    FIN-12: Prevent cross-user push endpoint hijacking, redact customer email and Paystack
+    reference from vendor order views, and declare explicit read_only_fields on read serializers.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student_a = User.objects.create_user(
+            email='fin12.a@st.knust.edu.gh', password='Password123',
+            full_name='Fin12 Student A', reference_id='20891201', phone='0249120001',
+            hall='Unity Hall', verified=True, role='customer', account_type='customer',
+        )
+        cls.student_b = User.objects.create_user(
+            email='fin12.b@st.knust.edu.gh', password='Password123',
+            full_name='Fin12 Student B', reference_id='20891202', phone='0249120002',
+            hall='Unity Hall', verified=True, role='customer', account_type='customer',
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='fin12.vendor@st.knust.edu.gh', password='Password123',
+            full_name='Fin12 Vendor', reference_id='20891203', phone='0249120003',
+            hall='Unity Hall', verified=True, role='vendor', account_type='vendor', is_vendor=True,
+        )
+        cls.admin = User.objects.create_superuser(
+            email='fin12.admin@st.knust.edu.gh', password='AdminPassword123',
+            full_name='Fin12 Admin',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_fin12', user=cls.vendor_user, name='Fin12 Kitchen',
+            hall='Unity Hall', open=True, active=True,
+        )
+        cls.order = Order.objects.create(
+            id='STW-FIN12-1', customer=cls.student_a, email=cls.student_a.email,
+            vendor=cls.vendor, vendor_name=cls.vendor.name,
+            subtotal=Decimal('30.00'), fee=Decimal('1.50'), total=Decimal('31.50'),
+            payment_status='paid', payment_reference='PSK-FIN12-SECRET', handoff_code='654321',
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+
+    def test_push_subscription_cannot_be_hijacked_by_another_user(self):
+        endpoint = 'https://push.example.com/sub/fin12-abc'
+        self.client.force_authenticate(user=self.student_a)
+        r1 = self.client.post('/api/notifications/subscribe/', {
+            'endpoint': endpoint, 'keys': {'p256dh': 'k1', 'auth': 'a1'},
+        }, format='json')
+        self.assertEqual(r1.status_code, 201)
+
+        self.client.force_authenticate(user=self.student_b)
+        r2 = self.client.post('/api/notifications/subscribe/', {
+            'endpoint': endpoint, 'keys': {'p256dh': 'evil', 'auth': 'evil'},
+        }, format='json')
+        self.assertEqual(r2.status_code, 409)
+        sub = PushSubscription.objects.get(endpoint=endpoint)
+        self.assertEqual(str(sub.user_id), str(self.student_a.id))
+        self.assertEqual(sub.keys.get('p256dh'), 'k1')
+
+    def test_order_serializer_redacts_customer_email_and_payment_ref_from_vendor_and_read_only_fields(self):
+        from api import serializers as api_serializers
+
+        # Vendor views order -> email, payment.reference, handoffCode must be None
+        self.client.force_authenticate(user=self.vendor_user)
+        r_v_detail = self.client.get(f'/api/orders/{self.order.id}/')
+        self.assertEqual(r_v_detail.status_code, 200)
+        self.assertIsNone(r_v_detail.data['email'])
+        self.assertIsNone(r_v_detail.data['payment']['reference'])
+        self.assertIsNone(r_v_detail.data['handoffCode'])
+
+        r_v_list = self.client.get('/api/orders/?as=vendor')
+        self.assertEqual(r_v_list.status_code, 200)
+        self.assertEqual(len(r_v_list.data), 1)
+        self.assertIsNone(r_v_list.data[0]['email'])
+        self.assertIsNone(r_v_list.data[0]['payment']['reference'])
+
+        # Customer owner still sees their email, payment.reference, and handoffCode
+        self.client.force_authenticate(user=self.student_a)
+        r_c = self.client.get(f'/api/orders/{self.order.id}/')
+        self.assertEqual(r_c.status_code, 200)
+        self.assertEqual(r_c.data['email'], self.student_a.email)
+        self.assertEqual(r_c.data['payment']['reference'], 'PSK-FIN12-SECRET')
+        self.assertEqual(r_c.data['handoffCode'], '654321')
+
+        # Platform admin also still sees email and payment.reference
+        self.client.force_authenticate(user=self.admin)
+        r_a = self.client.get(f'/api/orders/{self.order.id}/')
+        self.assertEqual(r_a.status_code, 200)
+        self.assertEqual(r_a.data['email'], self.student_a.email)
+        self.assertEqual(r_a.data['payment']['reference'], 'PSK-FIN12-SECRET')
+
+        # All read ModelSerializers explicitly declare read_only_fields covering Meta.fields
+        for ser_cls in (
+            api_serializers.UserSerializer,
+            api_serializers.VendorSerializer,
+            api_serializers.MealSerializer,
+            api_serializers.OrderSerializer,
+            api_serializers.ReviewSerializer,
+            api_serializers.ComplianceSerializer,
+            api_serializers.PayoutBatchSerializer,
+            api_serializers.SupportCaseSerializer,
+            api_serializers.AuditEntrySerializer,
+            api_serializers.AdminUserSerializer,
+        ):
+            ro = getattr(ser_cls.Meta, 'read_only_fields', ())
+            self.assertEqual(set(ro), set(ser_cls.Meta.fields), f'{ser_cls.__name__} missing read_only_fields')
