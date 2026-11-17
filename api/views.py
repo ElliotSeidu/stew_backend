@@ -14,7 +14,7 @@ from django.utils import timezone as dj_timezone
 from django.utils.html import strip_tags
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 
@@ -408,7 +408,7 @@ def login_view(request):
 
     try:
         email = clean_knust_email(raw_email)
-    except ValidationError as e:
+    except ValidationError:
         return Response({'message': 'Only KNUST student emails (@st.knust.edu.gh) are allowed.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not check_rate_limit(f"login_{email}", limit=10, window_seconds=300):
@@ -2015,7 +2015,7 @@ def support_case_resolve_view(request, code):
                 order.save(update_fields=['cancelled_at', 'payment_status'])
                 if was_uncollected:
                     _restore_order_stock(order)
-                record_audit(request.user.email, f'case_refund_order_cancelled', 'order', order.id, {'case': case.code})
+                record_audit(request.user.email, 'case_refund_order_cancelled', 'order', order.id, {'case': case.code})
 
     record_audit(request.user.email, f'case_{action}', 'support_case', case.code, {'order': case.order, 'vendor': case.vendor})
     case.delete()

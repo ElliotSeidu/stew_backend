@@ -2,7 +2,6 @@ from decimal import Decimal
 import uuid
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
-from django.utils import timezone
 from api.validators import clean_knust_email
 
 

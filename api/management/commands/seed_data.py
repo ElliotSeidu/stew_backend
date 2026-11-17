@@ -1,6 +1,5 @@
 from django.core.management.base import BaseCommand
-from django.utils import timezone
-from api.models import User, Vendor, Meal, Order, Review, Compliance
+from api.models import User, Vendor, Meal, Review, Compliance
 
 
 class Command(BaseCommand):
