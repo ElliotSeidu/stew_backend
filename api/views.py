@@ -1,23 +1,25 @@
+import hmac
+import hashlib
 import json
 import logging
 import requests as http_requests
 import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import models, transaction
 from django.utils import timezone as dj_timezone
 from django.utils.html import strip_tags
 from rest_framework import status
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 
 
 def escape(value) -> str:
     """Strips HTML tags and angle brackets while preserving normal punctuation (e.g. apostrophes) for JSON responses."""
     return strip_tags(str(value or '')).replace('<', '').replace('>', '')
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
 
 from api.authentication import JWTAuthentication, IsStudentUser, IsVendorUser, IsAdminUser
 from api.models import (
@@ -1233,8 +1235,6 @@ def paystack_webhook_view(request):
     browser mid-payment (common with MoMo approvals). Authenticity is proven by the
     HMAC-SHA512 signature of the raw body using our secret key.
     """
-    import hmac
-    import hashlib
     secret_key = getattr(settings, 'PAYSTACK_SECRET_KEY', '')
     signature = request.headers.get('X-Paystack-Signature', '')
     if not secret_key or not signature:
