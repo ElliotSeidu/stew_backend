@@ -108,6 +108,21 @@ def _restore_order_stock(order) -> None:
             Meal.objects.filter(id=str(line.get('mealId'))).update(left=models.F('left') + qty)
 
 
+def _bound_queryset(request, queryset, default_limit: int = 200, max_limit: int = 500):
+    """Slices a queryset using optional ?limit=&offset= params while keeping a hard upper bound."""
+    try:
+        raw_limit = int(request.query_params.get('limit', default_limit))
+    except (TypeError, ValueError):
+        raw_limit = default_limit
+    try:
+        raw_offset = int(request.query_params.get('offset', 0))
+    except (TypeError, ValueError):
+        raw_offset = 0
+    limit = max(1, min(max_limit, raw_limit))
+    offset = max(0, raw_offset)
+    return queryset[offset:offset + limit]
+
+
 def _sanitize_media_url(raw_val, max_len: int = 300000) -> str:
     """Allows only empty string, data:image/* URIs, or https:// / relative URLs."""
     val = str(raw_val or '').strip()
@@ -685,7 +700,7 @@ def delete_account_view(request):
 @permission_classes([AllowAny])
 def vendors_list_view(request):
     """Lists all active student kitchen vendors."""
-    vendors = Vendor.objects.filter(active=True)
+    vendors = _bound_queryset(request, Vendor.objects.filter(active=True))
     return Response(VendorSerializer(vendors, many=True).data)
 
 
@@ -720,9 +735,12 @@ def meals_list_view(request):
             if not auth_res:
                 return Response({'message': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
             user, _ = auth_res
-            meals = Meal.objects.select_related('vendor').filter(vendor__user=user).order_by('-created_at')
+            meals = _bound_queryset(
+                request,
+                Meal.objects.select_related('vendor').filter(vendor__user=user).order_by('-created_at'),
+            )
             return Response(MealSerializer(meals, many=True).data)
-        meals = Meal.objects.select_related('vendor').filter(on=True, vendor__active=True)
+        meals = _bound_queryset(request, Meal.objects.select_related('vendor').filter(on=True, vendor__active=True))
         return Response(MealSerializer(meals, many=True).data)
 
     # Adding a meal requires verified, active vendor authentication
@@ -829,6 +847,8 @@ def meal_detail_view(request, pk):
 def vendor_apply_view(request):
     """Submits vendor onboarding application."""
     user = request.user
+    if not check_rate_limit(f"vendor_apply_{user.id}", limit=5, window_seconds=300):
+        return Response({'message': 'Too many kitchen applications. Please wait a few minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     data = request.data
     kitchen_name = escape(str(data.get('kitchen') or data.get('kitchenName') or '').strip())[:150]
     if len(kitchen_name) < 2:
@@ -945,9 +965,12 @@ def orders_view(request):
             ).order_by('-created_at')
         # Annotate whether each order has a review to avoid N+1 queries in OrderSerializer.get_reviewed
         orders = orders.annotate(_has_review=Exists(Review.objects.filter(order_id=OuterRef('pk'))))
+        orders = _bound_queryset(request, orders)
         return Response(OrderSerializer(orders, many=True, context={'request': request}).data)
 
     # POST: Place order
+    if not check_rate_limit(f"order_create_{user.id}", limit=20, window_seconds=60):
+        return Response({'message': 'Too many orders placed too quickly. Please wait a moment.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     data = request.data
 
     # --- Validate order lines schema ----------------------------------------
@@ -1140,6 +1163,8 @@ def cancel_order_view(request, pk):
 @permission_classes([IsStudentUser])
 def init_payment_view(request):
     """Initializes Paystack payment for an order."""
+    if not check_rate_limit(f"pay_init_{request.user.id}", limit=15, window_seconds=60):
+        return Response({'message': 'Too many payment attempts. Please wait a moment.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     order_id = request.data.get('orderId')
     try:
         order = Order.objects.get(id=order_id)
@@ -1266,6 +1291,8 @@ def verify_payment_view(request):
     before marking the order as paid. Payment becomes 'paid' and money is HELD by
     STEW pending student collection (escrow).
     """
+    if not check_rate_limit(f"pay_verify_{request.user.id}", limit=30, window_seconds=60):
+        return Response({'message': 'Too many payment verification checks. Please wait a moment.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     order_id = request.data.get('orderId')
     reference = str(request.data.get('reference', '')).strip()
 
@@ -1415,6 +1442,8 @@ def _release_escrow(order, collected_via: str, actor_email: str) -> None:
 @permission_classes([IsStudentUser])
 def propose_meetup_view(request, pk):
     """Proposes a safe meeting spot for order collection."""
+    if not check_rate_limit(f"meetup_{request.user.id}", limit=20, window_seconds=60):
+        return Response({'message': 'Too many meetup requests. Please wait a moment.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     try:
         order = Order.objects.get(id=pk)
     except Order.DoesNotExist:
@@ -1706,6 +1735,7 @@ def vendor_reviews_view(request, vendorId):
     qs = Review.objects.filter(vendor__id=vendorId)
     if not allow_hidden:
         qs = qs.exclude(moderation_status='hidden')
+    qs = _bound_queryset(request, qs)
     return Response(ReviewSerializer(qs, many=True).data)
 
 
@@ -1714,6 +1744,8 @@ def vendor_reviews_view(request, vendorId):
 @permission_classes([IsStudentUser])
 def create_review_view(request):
     """Customer submits a review for a completed order."""
+    if not check_rate_limit(f"review_{request.user.id}", limit=10, window_seconds=60):
+        return Response({'message': 'Too many review submissions. Please wait a moment.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     order_id = request.data.get('orderId')
     _reviewer = request.user
     try:
@@ -1765,7 +1797,7 @@ def create_review_view(request):
 @permission_classes([IsAdminUser])
 def moderation_queue_view(request):
     """Admin endpoint for pending reviews."""
-    qs = Review.objects.filter(moderation_status='pending')
+    qs = _bound_queryset(request, Review.objects.filter(moderation_status='pending'))
     return Response(ReviewSerializer(qs, many=True).data)
 
 
@@ -1838,7 +1870,7 @@ def vendor_compliance_view(request):
 @permission_classes([IsAdminUser])
 def admin_compliance_view(request):
     """Admin inspects all vendor food hygiene permits."""
-    qs = Compliance.objects.all()
+    qs = _bound_queryset(request, Compliance.objects.all())
     return Response(ComplianceSerializer(qs, many=True).data)
 
 
@@ -1852,7 +1884,7 @@ def admin_compliance_view(request):
 def payout_batches_view(request):
     """Admin view for aggregate vendor payout batches."""
     if request.method == 'GET':
-        batches = PayoutBatch.objects.all().order_by('-created_at')
+        batches = _bound_queryset(request, PayoutBatch.objects.all().order_by('-created_at'))
         return Response(PayoutBatchSerializer(batches, many=True).data)
 
     # POST: Create a new payout batch under row lock so concurrent calls cannot double-settle
@@ -1914,6 +1946,7 @@ def support_cases_view(request):
             cases = SupportCase.objects.all().order_by('-created_at')
         else:
             cases = SupportCase.objects.filter(user=user).order_by('-created_at')
+        cases = _bound_queryset(request, cases)
         return Response(SupportCaseSerializer(cases, many=True).data)
 
     data = request.data
@@ -1998,7 +2031,7 @@ def support_case_resolve_view(request, code):
 @permission_classes([IsAdminUser])
 def admin_vendors_view(request):
     """Admin list of all kitchens (both active and inactive)."""
-    vendors = Vendor.objects.all().order_by('-created_at')
+    vendors = _bound_queryset(request, Vendor.objects.all().order_by('-created_at'))
     return Response(VendorSerializer(vendors, many=True).data)
 
 
@@ -2027,7 +2060,7 @@ def admin_vendor_detail_view(request, pk):
 @permission_classes([IsAdminUser])
 def admin_users_view(request):
     """Admin list of all student accounts."""
-    users = User.objects.all().order_by('-created_at')
+    users = _bound_queryset(request, User.objects.all().order_by('-created_at'))
     return Response(AdminUserSerializer(users, many=True).data)
 
 
@@ -2070,6 +2103,8 @@ def admin_audit_view(request):
 @permission_classes([IsStudentUser])
 def subscribe_push_view(request):
     """Subscribes student device to push notifications."""
+    if not check_rate_limit(f"push_sub_{request.user.id}", limit=15, window_seconds=60):
+        return Response({'message': 'Too many subscription requests. Please wait.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     endpoint = str(request.data.get('endpoint') or '').strip()[:500]
     if not endpoint or not endpoint.startswith('https://'):
         return Response({'message': 'Push subscription endpoint must use https://'}, status=status.HTTP_400_BAD_REQUEST)

@@ -189,10 +189,21 @@ CORS_ALLOW_HEADERS = [
 # Security headers — always-on baseline; production adds HTTPS-specific headers
 # ---------------------------------------------------------------------------
 # Always enforce these regardless of DEBUG mode
+DATA_UPLOAD_MAX_MEMORY_SIZE = 2621440  # 2.5 MB
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+SECURE_CROSS_ORIGIN_OPENER_POLICY = 'same-origin'
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
 SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',')
+    if origin.strip()
+]
 
 if not DEBUG:
     SECURE_SSL_REDIRECT = True

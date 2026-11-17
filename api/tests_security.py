@@ -6,6 +6,7 @@ stays as a regression guard after the fix.
 """
 from datetime import timedelta
 from decimal import Decimal
+from django.conf import settings
 from django.db import IntegrityError, models, transaction
 from django.test import TestCase
 from django.utils import timezone
@@ -726,3 +727,100 @@ class MoneyPrecisionAndConstraintsTest(TestCase):
         legacy.refresh_from_db()
         self.assertIsNone(legacy.payment_reference)
         self.assertEqual(legacy.subtotal, Decimal('59.97'))
+
+
+class RateLimitPaginationAndSettingsSecurityTests(TestCase):
+    """
+    FINDING-07 & FINDING-08:
+      - Unbounded list endpoints support ?limit=&offset= and enforce a safe max row bound.
+      - Write/payment/meetup/review/vendor/push endpoints enforce check_rate_limit (429).
+      - settings.py enforces cookie HttpOnly/SameSite, COOP, and DATA_UPLOAD_MAX_MEMORY_SIZE.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='rl.student@st.knust.edu.gh',
+            password='Password123',
+            full_name='RateLimit Student',
+            reference_id='20884001',
+            phone='0248400001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+        )
+        cls.student_token = generate_jwt_token(cls.student)
+        cls.vendor_user = User.objects.create_user(
+            email='rl.vendor@st.knust.edu.gh',
+            password='Password123',
+            full_name='RateLimit Chef',
+            reference_id='20884002',
+            phone='0248400002',
+            hall='Unity Hall (Conti)',
+            verified=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='Bounded Kitchen',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_rl1',
+            user=cls.vendor_user,
+            name='Bounded Kitchen',
+            hall='Unity Hall (Conti)',
+            open=True,
+            active=True,
+        )
+        cls.m1 = Meal.objects.create(id='m_rl1', vendor=cls.vendor, name='Dish One', price=Decimal('20.00'), left=50, on=True)
+        cls.m2 = Meal.objects.create(id='m_rl2', vendor=cls.vendor, name='Dish Two', price=Decimal('25.00'), left=50, on=True)
+        cls.o1 = Order.objects.create(
+            id='STW-RL1', customer=cls.student, email=cls.student.email, phone=cls.student.phone,
+            area='Campus', vendor=cls.vendor, vendor_name=cls.vendor.name, pickup_day='2026-11-20',
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'), payment_status='pending',
+        )
+        cls.o2 = Order.objects.create(
+            id='STW-RL2', customer=cls.student, email=cls.student.email, phone=cls.student.phone,
+            area='Campus', vendor=cls.vendor, vendor_name=cls.vendor.name, pickup_day='2026-11-20',
+            subtotal=Decimal('25.00'), fee=Decimal('1.25'), total=Decimal('26.25'), payment_status='pending',
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_list_endpoints_honor_limit_and_offset(self):
+        res_meals = self.client.get('/api/meals/?limit=1')
+        self.assertEqual(res_meals.status_code, 200)
+        self.assertIsInstance(res_meals.data, list)
+        self.assertEqual(len(res_meals.data), 1)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.student_token}')
+        res_orders = self.client.get('/api/orders/?limit=1')
+        self.assertEqual(res_orders.status_code, 200)
+        self.assertEqual(len(res_orders.data), 1)
+
+    def test_payment_init_and_order_create_rate_limited(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.student_token}')
+        statuses_pay = []
+        for _ in range(16):
+            r = self.client.post('/api/payments/initialize/', {'orderId': self.o1.id}, format='json')
+            statuses_pay.append(r.status_code)
+        self.assertEqual(statuses_pay[-1], 429)
+
+        _RATE_LIMIT_CACHE.clear()
+        statuses_ord = []
+        for _ in range(21):
+            r = self.client.post('/api/orders/', {
+                'lines': [{'mealId': self.m1.id, 'qty': 1}],
+                'area': 'Campus',
+                'pickupDay': '2026-11-20',
+            }, format='json')
+            statuses_ord.append(r.status_code)
+        self.assertEqual(statuses_ord[-1], 429)
+
+    def test_django_security_headers_cookies_and_upload_limit(self):
+        self.assertLessEqual(settings.DATA_UPLOAD_MAX_MEMORY_SIZE, 2621440)
+        self.assertTrue(settings.SESSION_COOKIE_HTTPONLY)
+        self.assertTrue(settings.CSRF_COOKIE_HTTPONLY)
+        self.assertEqual(settings.SESSION_COOKIE_SAMESITE, 'Lax')
+        self.assertEqual(settings.CSRF_COOKIE_SAMESITE, 'Lax')
+        self.assertEqual(settings.SECURE_CROSS_ORIGIN_OPENER_POLICY, 'same-origin')
