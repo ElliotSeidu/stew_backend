@@ -1,5 +1,5 @@
 import time
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from api.models import User, Vendor, Meal, Order, Review
@@ -324,6 +324,7 @@ class SecurityAnalystAndKNUSTPolicyTests(TestCase):
     # 6. Full Marketplace Lifecycle & Escrow Flow
     # ------------------------------------------------------------------------
 
+    @override_settings(DEBUG=True, PAYSTACK_ALLOW_MOCK=True)
     def test_complete_order_placement_payment_and_meetup_flow(self):
         """Tests complete order creation, 5% fee calculation, Paystack init/verify, and meetup."""
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.student_token}')

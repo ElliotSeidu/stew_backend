@@ -4,11 +4,15 @@ Security regression tests for STEW API.
 Each test class demonstrates a vulnerability/loophole before remediation and
 stays as a regression guard after the fix.
 """
+import hashlib
+import hmac
+import json
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import MagicMock, patch
 from django.conf import settings
 from django.db import IntegrityError, connection, connections, models, transaction
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -1491,3 +1495,123 @@ class AtomicStateAndUploadSecurityTests(TestCase):
             'name': 'Valid Photo Meal', 'price': 25, 'stock': 4, 'cat': 'Soups', 'image': valid_jpeg,
         }, format='json')
         self.assertEqual(r_ok.status_code, 201, r_ok.data)
+
+
+class PaystackHardeningTests(TestCase):
+    """
+    FIN-10: PAYSTACK_ALLOW_MOCK must be impossible when DEBUG=False, webhook payloads must validate
+    event data amount/currency/status before touching escrow, and init_payment must lock/reuse ref.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='fin10.student@st.knust.edu.gh', password='Password123',
+            full_name='Fin10 Student', reference_id='20891001', phone='0249100001',
+            hall='Unity Hall', verified=True, role='customer', account_type='customer',
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='fin10.vendor@st.knust.edu.gh', password='Password123',
+            full_name='Fin10 Vendor', reference_id='20891002', phone='0249100002',
+            hall='Unity Hall', verified=True, role='vendor', account_type='vendor', is_vendor=True,
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_fin10', user=cls.vendor_user, name='Fin10 Kitchen',
+            hall='Unity Hall', open=True, active=True,
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+        self.order = Order.objects.create(
+            id='STW-FIN10-1', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='pending', handoff_code='123456',
+        )
+
+    @override_settings(DEBUG=False, PAYSTACK_ALLOW_MOCK=True, PAYSTACK_SECRET_KEY='')
+    def test_mock_payment_impossible_when_debug_false(self):
+        from api.views import _paystack_mock_allowed
+        self.assertFalse(_paystack_mock_allowed())
+        self.client.force_authenticate(user=self.student)
+        r_init = self.client.post('/api/payments/initialize/', {'orderId': self.order.id}, format='json')
+        self.assertEqual(r_init.status_code, 503)
+
+        self.order.payment_reference = 'PSK-DBGOFF'
+        self.order.save(update_fields=['payment_reference'])
+        r_ver = self.client.post('/api/payments/verify/', {'orderId': self.order.id, 'reference': 'PSK-DBGOFF'}, format='json')
+        self.assertEqual(r_ver.status_code, 503)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.payment_status, 'pending')
+
+    @override_settings(PAYSTACK_SECRET_KEY='sk_test_webhook_sec')
+    def test_webhook_rejects_mismatched_amount_currency_or_status_and_unknown_ref(self):
+        from api.models import AuditEntry
+        self.order.payment_reference = 'PSK-WH-1'
+        self.order.save(update_fields=['payment_reference'])
+
+        def post_signed(payload_dict, include_sig=True):
+            raw = json.dumps(payload_dict).encode('utf-8')
+            sig = hmac.new(b'sk_test_webhook_sec', raw, hashlib.sha512).hexdigest()
+            headers = {'HTTP_X_PAYSTACK_SIGNATURE': sig} if include_sig else {}
+            return self.client.post('/api/payments/webhook/', data=raw, content_type='application/json', **headers)
+
+        mock_resp = MagicMock(ok=True)
+        mock_resp.json.return_value = {
+            'status': True,
+            'data': {'status': 'success', 'reference': 'PSK-WH-1', 'currency': 'GHS', 'amount': 2100},
+        }
+
+        with patch('api.views.http_requests.get', return_value=mock_resp) as mock_get:
+            # Missing signature header -> 400
+            r_nosig = post_signed({'event': 'charge.success', 'data': {'status': 'success', 'reference': 'PSK-WH-1', 'currency': 'GHS', 'amount': 2100}}, include_sig=False)
+            self.assertEqual(r_nosig.status_code, 400)
+            mock_get.assert_not_called()
+
+            # Underpayment in webhook event payload
+            post_signed({'event': 'charge.success', 'data': {'status': 'success', 'reference': 'PSK-WH-1', 'currency': 'GHS', 'amount': 100}})
+            mock_get.assert_not_called()
+
+            # Wrong currency
+            post_signed({'event': 'charge.success', 'data': {'status': 'success', 'reference': 'PSK-WH-1', 'currency': 'USD', 'amount': 2100}})
+            mock_get.assert_not_called()
+
+            # Non-success data.status inside charge.success event
+            post_signed({'event': 'charge.success', 'data': {'status': 'failed', 'reference': 'PSK-WH-1', 'currency': 'GHS', 'amount': 2100}})
+            mock_get.assert_not_called()
+
+            # Unknown / blank reference
+            post_signed({'event': 'charge.success', 'data': {'status': 'success', 'reference': 'PSK-UNKNOWN-999', 'currency': 'GHS', 'amount': 2100}})
+            post_signed({'event': 'charge.success', 'data': {'status': 'success', 'reference': '', 'currency': 'GHS', 'amount': 2100}})
+            mock_get.assert_not_called()
+
+            self.order.refresh_from_db()
+            self.assertEqual(self.order.payment_status, 'pending')
+
+            # Valid matching webhook succeeds
+            r_ok = post_signed({'event': 'charge.success', 'data': {'status': 'success', 'reference': 'PSK-WH-1', 'currency': 'GHS', 'amount': 2100}})
+            self.assertEqual(r_ok.status_code, 200)
+            self.assertEqual(mock_get.call_count, 1)
+            self.order.refresh_from_db()
+            self.assertEqual(self.order.payment_status, 'paid')
+            first_paid_at = self.order.paid_at
+
+            # Duplicate/replay delivery is idempotent
+            r_dup = post_signed({'event': 'charge.success', 'data': {'status': 'success', 'reference': 'PSK-WH-1', 'currency': 'GHS', 'amount': 2100}})
+            self.assertEqual(r_dup.status_code, 200)
+            self.assertEqual(mock_get.call_count, 1)
+            self.order.refresh_from_db()
+            self.assertEqual(self.order.paid_at, first_paid_at)
+            self.assertEqual(AuditEntry.objects.filter(entity_id=self.order.id, action='payment_verified').count(), 1)
+
+    @override_settings(DEBUG=True, PAYSTACK_ALLOW_MOCK=True, PAYSTACK_SECRET_KEY='')
+    def test_init_payment_idempotent_reuses_reference(self):
+        self.client.force_authenticate(user=self.student)
+        r1 = self.client.post('/api/payments/initialize/', {'orderId': self.order.id}, format='json')
+        self.assertEqual(r1.status_code, 200)
+        r2 = self.client.post('/api/payments/initialize/', {'orderId': self.order.id}, format='json')
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r1.data['reference'], r2.data['reference'])
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.payment_reference, r1.data['reference'])

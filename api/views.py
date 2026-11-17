@@ -244,7 +244,7 @@ def _unique_id(model, prefix: str, field: str = 'pk') -> str:
 
 
 def _paystack_mock_allowed() -> bool:
-    return bool(getattr(settings, 'PAYSTACK_ALLOW_MOCK', settings.DEBUG))
+    return bool(getattr(settings, 'DEBUG', False) and getattr(settings, 'PAYSTACK_ALLOW_MOCK', False))
 
 
 def _dispatch_otp_email(email: str, code: str, purpose: str) -> None:
@@ -1261,81 +1261,103 @@ def cancel_order_view(request, pk):
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsStudentUser])
 def init_payment_view(request):
-    """Initializes Paystack payment for an order."""
+    """Initializes Paystack payment for an order (locks row and avoids overwriting existing reference)."""
     if not check_rate_limit(f"pay_init_{request.user.id}", limit=15, window_seconds=60):
         return Response({'message': 'Too many payment attempts. Please wait a moment.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     order_id = request.data.get('orderId')
-    try:
-        order = Order.objects.get(id=order_id)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    # IDOR defense: only the order's customer or an admin can initialize payment
-    if not (_is_order_owner(request.user, order) or is_platform_admin(request.user)):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-
-    if order.cancelled_at:
-        return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if order.payment_status in ['paid', 'released']:
-        return Response({'message': 'This order is already paid'}, status=status.HTTP_400_BAD_REQUEST)
-    if order.payment_status in ['refunded', 'refund_pending', 'cancelled']:
-        return Response({'message': 'This order can no longer be paid for'}, status=status.HTTP_400_BAD_REQUEST)
-
-    reference = f"PSK-{secrets.token_hex(8).upper()}"
-    amount_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
     public_key = getattr(settings, 'PAYSTACK_PUBLIC_KEY', '')
     secret_key = getattr(settings, 'PAYSTACK_SECRET_KEY', '')
 
-    if secret_key:
+    with transaction.atomic():
         try:
-            ps_resp = http_requests.post(
-                'https://api.paystack.co/transaction/initialize',
-                headers={'Authorization': f'Bearer {secret_key}', 'Content-Type': 'application/json'},
-                json={
-                    'email': order.email,
-                    'amount': amount_pesewas,
-                    'currency': 'GHS',
-                    'reference': reference,
-                    'channels': ['mobile_money', 'card'],
-                    'metadata': {'orderId': order.id},
-                },
-                timeout=10,
-            )
-            ps_data = ps_resp.json()
-        except (http_requests.RequestException, ValueError) as exc:
-            logger.error("Paystack initialize failed: %s", exc)
-            return Response({'message': 'Payment gateway unavailable. Please retry.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        if not ps_resp.ok or not ps_data.get('status'):
-            logger.warning("Paystack initialize rejected for order %s: %s", order.id, ps_data.get('message'))
-            return Response({'message': 'The payment could not be started. Please try again.'}, status=status.HTTP_502_BAD_GATEWAY)
-        order.payment_reference = reference
-        order.save(update_fields=['payment_reference'])
-        ps = ps_data.get('data') or {}
-        return Response({
-            'reference': reference,
-            'amount': amount_pesewas,
-            'currency': 'GHS',
-            'publicKey': public_key,
-            'email': order.email,
-            'access_code': ps.get('access_code'),
-            'checkout_url': ps.get('authorization_url'),
-        })
+            order = Order.objects.select_for_update().get(id=order_id)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    if not _paystack_mock_allowed():
-        logger.error("PAYSTACK_SECRET_KEY is not configured; refusing to take payments.")
-        return Response({'message': 'Payments are not configured yet. Please contact support.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        # IDOR defense: only the order's customer or an admin can initialize payment
+        if not (_is_order_owner(request.user, order) or is_platform_admin(request.user)):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
-    # Development-only simulated payment (never enabled when DEBUG=False unless explicitly opted in)
-    order.payment_reference = reference
-    order.save(update_fields=['payment_reference'])
+        if order.cancelled_at:
+            return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.payment_status in ['paid', 'released']:
+            return Response({'message': 'This order is already paid'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.payment_status in ['refunded', 'refund_pending', 'cancelled']:
+            return Response({'message': 'This order can no longer be paid for'}, status=status.HTTP_400_BAD_REQUEST)
+
+        amount_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+        existing_ref = str(order.payment_reference or '').strip()
+        order_email = order.email
+        locked_order_id = order.id
+
+        if not secret_key:
+            if not _paystack_mock_allowed():
+                logger.error("PAYSTACK_SECRET_KEY is not configured; refusing to take payments.")
+                return Response({'message': 'Payments are not configured yet. Please contact support.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+            # Development-only simulated payment (strictly requires DEBUG=True and PAYSTACK_ALLOW_MOCK=True)
+            reference = existing_ref or f"PSK-{secrets.token_hex(8).upper()}"
+            if not existing_ref:
+                order.payment_reference = reference
+                order.save(update_fields=['payment_reference'])
+            return Response({
+                'reference': reference,
+                'amount': amount_pesewas,
+                'currency': 'GHS',
+                'publicKey': public_key,
+                'email': order_email,
+                'mock': True,
+            })
+
+    # Live Paystack mode: perform external HTTP verification/initialization outside DB locks
+    if existing_ref:
+        ok_existing, _, _ = _paystack_verify(existing_ref, order)
+        if ok_existing:
+            _mark_order_paid(order, request.user.email, existing_ref)
+            return Response({'message': 'This order is already paid'}, status=status.HTTP_400_BAD_REQUEST)
+
+    reference = existing_ref or f"PSK-{secrets.token_hex(8).upper()}"
+    try:
+        ps_resp = http_requests.post(
+            'https://api.paystack.co/transaction/initialize',
+            headers={'Authorization': f'Bearer {secret_key}', 'Content-Type': 'application/json'},
+            json={
+                'email': order_email,
+                'amount': amount_pesewas,
+                'currency': 'GHS',
+                'reference': reference,
+                'channels': ['mobile_money', 'card'],
+                'metadata': {'orderId': locked_order_id},
+            },
+            timeout=10,
+        )
+        ps_data = ps_resp.json()
+    except (http_requests.RequestException, ValueError) as exc:
+        logger.error("Paystack initialize failed: %s", exc)
+        return Response({'message': 'Payment gateway unavailable. Please retry.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    if not ps_resp.ok or not ps_data.get('status'):
+        logger.warning("Paystack initialize rejected for order %s: %s", locked_order_id, ps_data.get('message'))
+        return Response({'message': 'The payment could not be started. Please try again.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+    with transaction.atomic():
+        locked = Order.objects.select_for_update().get(id=locked_order_id)
+        if locked.cancelled_at or locked.payment_status in ['paid', 'released', 'refunded', 'refund_pending', 'cancelled']:
+            return Response({'message': 'This order can no longer be paid for'}, status=status.HTTP_400_BAD_REQUEST)
+        if not locked.payment_reference:
+            locked.payment_reference = reference
+            locked.save(update_fields=['payment_reference'])
+        else:
+            reference = locked.payment_reference
+
+    ps = ps_data.get('data') or {}
     return Response({
         'reference': reference,
         'amount': amount_pesewas,
         'currency': 'GHS',
         'publicKey': public_key,
-        'email': order.email,
-        'mock': True,
+        'email': order_email,
+        'access_code': ps.get('access_code'),
+        'checkout_url': ps.get('authorization_url'),
     })
 
 
@@ -1372,11 +1394,15 @@ def _paystack_verify(reference, order):
     if not ps_resp.ok or tx.get('status') != 'success':
         logger.warning("Paystack verification failed for ref=%s: %s", reference, ps_data.get('message'))
         return False, status.HTTP_402_PAYMENT_REQUIRED, 'Payment could not be verified. Please try again.'
-    if tx.get('reference') != reference or str(tx.get('currency', 'GHS')).upper() != 'GHS':
+    if tx.get('reference') != reference or str(tx.get('currency') or '').upper() != 'GHS':
         return False, status.HTTP_402_PAYMENT_REQUIRED, 'Payment details do not match this order.'
     # Validate amount to prevent partial-payment attacks
     expected_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
-    if int(tx.get('amount') or 0) < expected_pesewas:
+    try:
+        tx_amount = int(tx.get('amount'))
+    except (TypeError, ValueError):
+        return False, status.HTTP_402_PAYMENT_REQUIRED, 'Payment amount does not match order total.'
+    if tx_amount < expected_pesewas:
         logger.warning("Payment amount mismatch for order %s (ref=%s)", order.id, reference)
         return False, status.HTTP_402_PAYMENT_REQUIRED, 'Payment amount does not match order total.'
     return True, status.HTTP_200_OK, ''
@@ -1458,13 +1484,29 @@ def paystack_webhook_view(request):
         return Response({'ok': False}, status=status.HTTP_400_BAD_REQUEST)
 
     if payload.get('event') == 'charge.success':
-        reference = str((payload.get('data') or {}).get('reference') or '')
-        order = Order.objects.filter(payment_reference=reference).first() if reference else None
-        if order and not order.cancelled_at and order.payment_status not in ['paid', 'released']:
-            # Re-verify with Paystack rather than trusting the payload amount blindly
-            ok, _, _ = _paystack_verify(reference, order)
-            if ok:
-                _mark_order_paid(order, 'paystack_webhook', reference)
+        ev_data = payload.get('data')
+        if isinstance(ev_data, dict):
+            reference = str(ev_data.get('reference') or '').strip()
+            ev_status = str(ev_data.get('status') or '').lower()
+            ev_currency = str(ev_data.get('currency') or '').upper()
+            order = Order.objects.filter(payment_reference=reference).first() if reference else None
+            if (
+                order
+                and not order.cancelled_at
+                and order.payment_status not in ['paid', 'released', 'refunded', 'refund_pending', 'cancelled']
+                and ev_status == 'success'
+                and ev_currency == 'GHS'
+            ):
+                expected_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+                try:
+                    ev_amount = int(ev_data.get('amount'))
+                except (TypeError, ValueError):
+                    ev_amount = -1
+                if ev_amount >= expected_pesewas:
+                    # Re-verify with Paystack rather than trusting the webhook payload alone
+                    ok, _, _ = _paystack_verify(reference, order)
+                    if ok:
+                        _mark_order_paid(order, 'paystack_webhook', reference)
     # Always 200 so Paystack stops retrying once the signature is valid
     return Response({'ok': True})
 

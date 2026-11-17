@@ -4,7 +4,7 @@ Invariant and failure-scenario tests for the STEW API.
 from datetime import timedelta
 import json
 import secrets
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -707,6 +707,7 @@ class AdminUnificationMatrixTest(TestCase):
         self.assertEqual(self.client.post(f'/api/orders/{o_adm.id}/cancel/', format='json').status_code, 200)
 
     # --- 17. POST /api/payments/initialize/ on third-party order ---
+    @override_settings(DEBUG=True, PAYSTACK_ALLOW_MOCK=True)
     def test_matrix_17_init_payment_third_party(self):
         for k in self.non_admins:
             with self.subTest(user=k):
@@ -728,6 +729,7 @@ class AdminUnificationMatrixTest(TestCase):
         )
 
     # --- 18. POST /api/payments/verify/ on third-party order ---
+    @override_settings(DEBUG=True, PAYSTACK_ALLOW_MOCK=True)
     def test_matrix_18_verify_payment_third_party(self):
         for k in self.non_admins:
             with self.subTest(user=k):
