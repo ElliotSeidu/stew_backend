@@ -381,7 +381,18 @@ def verify_email_view(request):
         'login_code_expires',
     ])
     if was_unverified:
-        Vendor.objects.filter(user=user, active=False).update(active=True, open=True)
+        for inactive_vendor in Vendor.objects.filter(user=user, active=False):
+            last_admin_evt = (
+                AuditEntry.objects.filter(
+                    action='admin_vendor_updated',
+                    entity_type='vendor',
+                    entity_id=inactive_vendor.id,
+                )
+                .order_by('-created_at')
+                .first()
+            )
+            if not last_admin_evt or last_admin_evt.extra.get('active') is not False:
+                Vendor.objects.filter(pk=inactive_vendor.pk).update(active=True, open=True)
 
     token = generate_jwt_token(user)
     record_audit(user.email, 'email_verified', 'user', user.id)
@@ -735,8 +746,12 @@ def vendor_detail_view(request, pk):
         allow_inactive = False
         try:
             auth_res = JWTAuthentication().authenticate(request)
-            if auth_res and is_platform_admin(auth_res[0]):
-                allow_inactive = True
+            if auth_res:
+                auth_user = auth_res[0]
+                allow_inactive = bool(
+                    is_platform_admin(auth_user)
+                    or (vendor.user_id and str(vendor.user_id) == str(auth_user.id))
+                )
         except Exception:
             allow_inactive = False
         if not allow_inactive:
@@ -943,6 +958,12 @@ def vendor_apply_view(request):
 def vendor_activate_view(request):
     """Marks user as an active vendor."""
     user = request.user
+    existing_vendor = Vendor.objects.filter(user=user).first()
+    if existing_vendor and not existing_vendor.active and not is_platform_admin(user):
+        return Response(
+            {'message': 'Your kitchen is currently suspended and cannot be reactivated without admin approval.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     user.is_vendor = True
     if not is_platform_admin(user):
         user.role = 'vendor'

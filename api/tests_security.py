@@ -230,6 +230,63 @@ class VendorGateSecurityTests(TestCase):
         self.suspended_order.refresh_from_db()
         self.assertIsNone(self.suspended_order.payout_batch_id)
 
+    def test_inactive_or_suspended_vendor_owner_can_read_own_vendor_detail_and_compliance_but_public_cannot(self):
+        # Owner of inactive/pending vendor can still inspect own vendor status, profile, and compliance
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.suspended_token}')
+        me_res = self.client.get('/api/auth/me/')
+        self.assertEqual(me_res.status_code, 200)
+
+        own_detail = self.client.get(f'/api/vendors/{self.suspended_vendor.id}/')
+        self.assertEqual(own_detail.status_code, 200, own_detail.data)
+        self.assertEqual(own_detail.data['id'], self.suspended_vendor.id)
+
+        comp_get = self.client.get('/api/vendor/compliance/')
+        self.assertEqual(comp_get.status_code, 200)
+        comp_post = self.client.post('/api/vendor/compliance/', {
+            'type': 'FDA food hygiene permit',
+            'number': 'FDA-KNUST-991',
+            'issuedAt': '2026-01-01',
+            'expiresAt': '2027-01-01',
+        }, format='json')
+        self.assertEqual(comp_post.status_code, 200)
+
+        # Other students and anonymous callers still get 404 for inactive kitchens
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.student_token}')
+        other_detail = self.client.get(f'/api/vendors/{self.suspended_vendor.id}/')
+        self.assertEqual(other_detail.status_code, 404)
+
+    def test_suspended_vendor_cannot_self_reactivate_via_vendor_activate_or_verify_email(self):
+        from api.models import AuditEntry
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.suspended_token}')
+        act_res = self.client.post('/api/vendor/activate/', {}, format='json')
+        self.assertEqual(act_res.status_code, 403)
+
+        # Simulate admin suspension audit trail followed by OTP re-verification
+        Vendor.objects.filter(id=self.suspended_vendor.id).update(active=False, open=False)
+        AuditEntry.objects.create(
+            actor=self.admin.email,
+            action='admin_vendor_updated',
+            entity_type='vendor',
+            entity_id=self.suspended_vendor.id,
+            extra={'active': False, 'open': False},
+        )
+        self.suspended_vendor_user.verified = False
+        self.suspended_vendor_user.verification_code_hash = hash_token('445566')
+        self.suspended_vendor_user.verification_code_expires = timezone.now() + timedelta(minutes=10)
+        self.suspended_vendor_user.save(update_fields=[
+            'verified', 'verification_code_hash', 'verification_code_expires',
+        ])
+
+        self.client.credentials()
+        ver_res = self.client.post('/api/auth/verify-email/', {
+            'email': self.suspended_vendor_user.email,
+            'code': '445566',
+        }, format='json')
+        self.assertEqual(ver_res.status_code, 200, ver_res.data)
+        self.suspended_vendor.refresh_from_db()
+        self.assertFalse(self.suspended_vendor.active)
+        self.assertFalse(self.suspended_vendor.open)
+
 
 class OrderStateAndConcurrencySecurityTests(TestCase):
     """
