@@ -60,11 +60,22 @@ def record_audit(actor, action, entity_type, entity_id, extra=None):
 
 
 def _is_order_owner(user, order) -> bool:
-    return bool(user and user.is_authenticated and (order.customer == user or order.email == user.email))
+    if not (user and user.is_authenticated):
+        return False
+    return bool(
+        (order.customer_id and str(order.customer_id) == str(user.id))
+        or (order.email and order.email == user.email)
+    )
 
 
 def _is_order_vendor(user, order) -> bool:
-    return bool(user and user.is_authenticated and order.vendor and order.vendor.user == user)
+    return bool(
+        user
+        and user.is_authenticated
+        and order.vendor
+        and order.vendor.user_id
+        and str(order.vendor.user_id) == str(user.id)
+    )
 
 
 def _is_order_participant(user, order) -> bool:
@@ -99,13 +110,21 @@ def _terminal_order_response(order):
 
 def _restore_order_stock(order) -> None:
     """Restores meal stock quantities for every item line on a cancelled order."""
+    qty_by_meal = {}
     for line in order.lines or []:
         try:
             qty = int(line.get('qty') or 0)
         except (TypeError, ValueError):
             continue
-        if qty > 0:
-            Meal.objects.filter(id=str(line.get('mealId'))).update(left=models.F('left') + qty)
+        meal_id = str(line.get('mealId') or '').strip()
+        if meal_id and qty > 0:
+            qty_by_meal[meal_id] = qty_by_meal.get(meal_id, 0) + qty
+    if not qty_by_meal:
+        return
+    sorted_ids = sorted(qty_by_meal.keys())
+    list(Meal.objects.select_for_update().filter(id__in=sorted_ids).order_by('id'))
+    for meal_id in sorted_ids:
+        Meal.objects.filter(id=meal_id).update(left=models.F('left') + qty_by_meal[meal_id])
 
 
 def _bound_queryset(request, queryset, default_limit: int = 200, max_limit: int = 500):
@@ -1020,7 +1039,7 @@ def orders_view(request):
     vendor = line_vendor
     if not vendor.open:
         return Response({'message': f'{vendor.name} is not taking orders right now.'}, status=status.HTTP_400_BAD_REQUEST)
-    if vendor.user_id and vendor.user_id == user.id:
+    if vendor.user_id and str(vendor.user_id) == str(user.id):
         return Response({'message': 'You cannot order from your own kitchen.'}, status=status.HTTP_400_BAD_REQUEST)
 
     # Recalculate subtotal from server-validated lines using exact Decimal math
@@ -1042,15 +1061,17 @@ def orders_view(request):
     now_ms = int(dj_timezone.now().timestamp() * 1000)
 
     with transaction.atomic():
-        # Lock meals and enforce stock so two students cannot buy the last portion
-        locked = {m.id: m for m in Meal.objects.select_for_update().filter(id__in=list(requested_qty.keys()))}
-        for meal_id, want in requested_qty.items():
+        # Lock meals in ascending PK order and enforce stock so two students cannot buy the last portion
+        sorted_meal_ids = sorted(requested_qty.keys())
+        locked = {m.id: m for m in Meal.objects.select_for_update().filter(id__in=sorted_meal_ids).order_by('id')}
+        for meal_id in sorted_meal_ids:
+            want = requested_qty[meal_id]
             m = locked.get(meal_id)
             if m is None or m.left < want:
                 left = m.left if m else 0
                 return Response({'errors': {'lines': f'Only {left} portion(s) of "{m.name if m else "a dish"}" left.'}}, status=status.HTTP_400_BAD_REQUEST)
-        for meal_id, want in requested_qty.items():
-            Meal.objects.filter(id=meal_id).update(left=models.F('left') - want)
+        for meal_id in sorted_meal_ids:
+            Meal.objects.filter(id=meal_id).update(left=models.F('left') - requested_qty[meal_id])
 
         order_id = _unique_id(Order, 'STW')
         order = Order.objects.create(
@@ -1116,12 +1137,12 @@ def cancel_order_view(request, pk):
     user = request.user
     with transaction.atomic():
         try:
-            order = Order.objects.select_for_update().select_related('vendor').get(id=pk)
+            order = Order.objects.select_for_update().get(id=pk)
         except Order.DoesNotExist:
             return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        is_owner = (order.customer == user or order.email == user.email)
-        is_order_vendor = (order.vendor and order.vendor.user == user)
+        is_owner = _is_order_owner(user, order)
+        is_order_vendor = _is_order_vendor(user, order)
         if not (is_owner or is_order_vendor or is_platform_admin(user)):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -1616,12 +1637,12 @@ def mark_collected_view(request, pk):
     _collector = request.user
     with transaction.atomic():
         try:
-            order = Order.objects.select_for_update().select_related('vendor', 'customer').get(id=pk)
+            order = Order.objects.select_for_update().get(id=pk)
         except Order.DoesNotExist:
             return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # IDOR protection: only the order's customer (or admin) may confirm collection
-        if order.customer != _collector and order.email != _collector.email and not is_platform_admin(_collector):
+        if not _is_order_owner(_collector, order) and not is_platform_admin(_collector):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
         if order.cancelled_at:
@@ -1647,7 +1668,7 @@ def complete_by_code_view(request, pk):
     """
     with transaction.atomic():
         try:
-            order = Order.objects.select_for_update().select_related('vendor').get(id=pk)
+            order = Order.objects.select_for_update().get(id=pk)
         except Order.DoesNotExist:
             return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1759,12 +1780,12 @@ def create_review_view(request):
 
     with transaction.atomic():
         try:
-            order = Order.objects.select_for_update().select_related('vendor', 'customer').get(id=order_id)
+            order = Order.objects.select_for_update().get(id=order_id)
         except Order.DoesNotExist:
             return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # Only the customer who placed this order may review it
-        if order.customer != _reviewer and order.email != _reviewer.email:
+        if not _is_order_owner(_reviewer, order):
             return Response({'message': 'You can only review your own orders.'}, status=status.HTTP_403_FORBIDDEN)
 
         # Order must be collected to review
@@ -1898,8 +1919,9 @@ def payout_batches_view(request):
                 settlement_status='released',
                 payout_batch_id__isnull=True,
                 cancelled_at__isnull=True,
-                vendor__active=True,
+                vendor_id__in=Vendor.objects.filter(active=True).values('id'),
             )
+            .order_by('id')
             .values_list('id', flat=True)
         )
         if not locked_ids:

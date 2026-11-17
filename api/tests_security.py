@@ -7,8 +7,9 @@ stays as a regression guard after the fix.
 from datetime import timedelta
 from decimal import Decimal
 from django.conf import settings
-from django.db import IntegrityError, models, transaction
-from django.test import TestCase
+from django.db import IntegrityError, connection, connections, models, transaction
+from django.test import TestCase, TransactionTestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -906,3 +907,198 @@ class Migration0003MessyDataTests(TestCase):
         self.assertEqual(len(non_null), len(set(non_null)))
         for ref in non_null:
             self.assertLessEqual(len(ref), 128)
+
+
+class PostgresLockingAndConcurrencyTests(TransactionTestCase):
+    """
+    FIN-03: Verifies PostgreSQL-safe select_for_update() (no nullable outer joins),
+    deterministic ascending Meal lock ordering, and safe multi-thread races.
+    """
+
+    def setUp(self):
+        self.student = User.objects.create_user(
+            email='pgcust1@st.knust.edu.gh', password='Password123',
+            verified=True, phone='+233240000101', hall='Unity',
+        )
+        self.student2 = User.objects.create_user(
+            email='pgcust2@st.knust.edu.gh', password='Password123',
+            verified=True, phone='+233240000102', hall='Independence',
+        )
+        self.vendor_user = User.objects.create_user(
+            email='pgvend@st.knust.edu.gh', password='Password123',
+            verified=True, is_vendor=True, role='vendor', account_type='vendor',
+            phone='+233240000103', hall='Repub',
+        )
+        self.admin_user = User.objects.create_user(
+            email='pgadmin@st.knust.edu.gh', password='Password123',
+            verified=True, is_admin=True, is_staff=True, role='admin', account_type='admin',
+            phone='+233240000104', hall='Admin',
+        )
+        self.vendor = Vendor.objects.create(
+            id='V-PG-1', user=self.vendor_user, name='PG Kitchen',
+            hall='Repub', active=True, open=True,
+        )
+        self.meal_a = Meal.objects.create(
+            id='meal-pg-a', vendor=self.vendor, name='Banku',
+            price=Decimal('15.00'), cat='local', left=10, on=True,
+        )
+        self.meal_z = Meal.objects.create(
+            id='meal-pg-z', vendor=self.vendor, name='Jollof',
+            price=Decimal('20.00'), cat='rice', left=10, on=True,
+        )
+
+    def _auth_client(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_select_for_update_endpoints_succeed_without_nullable_outer_join_and_lock_meals_sorted(self):
+        # 1. Create order with meal-z before meal-a and verify Meal lock query uses ascending ORDER BY id
+        c_cust = self._auth_client(self.student)
+        with CaptureQueriesContext(connection) as ctx:
+            r_ord = c_cust.post('/api/orders/', {
+                'lines': [
+                    {'mealId': self.meal_z.id, 'qty': 1},
+                    {'mealId': self.meal_a.id, 'qty': 1},
+                ],
+                'area': 'Unity',
+                'pickupDay': '2026-11-25',
+            }, format='json')
+        self.assertEqual(r_ord.status_code, 201, r_ord.data)
+        meal_lock_sql = [
+            q['sql'] for q in ctx.captured_queries
+            if 'api_meal' in q['sql'] and 'SELECT' in q['sql'] and 'meal-pg-a' in q['sql'] and 'meal-pg-z' in q['sql']
+        ]
+        self.assertTrue(meal_lock_sql and any('ORDER BY' in s and 'id' in s for s in meal_lock_sql), meal_lock_sql)
+
+        # Verify _restore_order_stock locks Meal rows in ascending id order too
+        o_cancel = Order.objects.get(id=r_ord.data['id'])
+        Order.objects.filter(id=o_cancel.id).update(payment_status='paid', prep_stage='accepted')
+        with CaptureQueriesContext(connection) as ctx_cancel:
+            r_cancel = c_cust.post(f'/api/orders/{o_cancel.id}/cancel/', {}, format='json')
+        self.assertEqual(r_cancel.status_code, 200, r_cancel.data)
+        restore_sql = [
+            q['sql'] for q in ctx_cancel.captured_queries
+            if 'api_meal' in q['sql'] and 'SELECT' in q['sql'] and 'ORDER BY' in q['sql']
+        ]
+        self.assertTrue(restore_sql, ctx_cancel.captured_queries)
+
+        # 2. complete_by_code_view + create_review_view + mark_collected_view + payout_batches_view on PostgreSQL
+        o_code = Order.objects.create(
+            id='STW-PG-CODE', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='paid', prep_stage='ready', handoff_code='654321',
+            lines=[{'mealId': self.meal_a.id, 'qty': 1}],
+        )
+        c_vend = self._auth_client(self.vendor_user)
+        r_complete = c_vend.post(f'/api/orders/{o_code.id}/complete/', {'code': '654321'}, format='json')
+        self.assertEqual(r_complete.status_code, 200, r_complete.data)
+
+        r_review = c_cust.post('/api/reviews/', {'orderId': o_code.id, 'rating': 5, 'text': 'Great!'}, format='json')
+        self.assertEqual(r_review.status_code, 201, r_review.data)
+
+        o_coll = Order.objects.create(
+            id='STW-PG-COLL', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('15.00'), fee=Decimal('0.75'), total=Decimal('15.75'),
+            payment_status='paid', prep_stage='ready', handoff_code='112233',
+            lines=[{'mealId': self.meal_a.id, 'qty': 1}],
+        )
+        r_coll = c_cust.post(f'/api/orders/{o_coll.id}/collected/', {}, format='json')
+        self.assertEqual(r_coll.status_code, 200, r_coll.data)
+
+        c_admin = self._auth_client(self.admin_user)
+        with CaptureQueriesContext(connection) as ctx_batch:
+            r_batch = c_admin.post('/api/payouts/batches/', {}, format='json')
+        self.assertEqual(r_batch.status_code, 201, r_batch.data)
+        self.assertEqual(r_batch.data['orderCount'], 2)
+        for q in ctx_batch.captured_queries:
+            if 'FOR UPDATE' in q['sql']:
+                self.assertNotIn('LEFT OUTER JOIN', q['sql'])
+
+    def test_postgresql_threaded_stock_cancel_complete_and_payout_races(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('Multi-thread row-lock race runs against PostgreSQL')
+
+        import threading
+        Meal.objects.filter(id=self.meal_a.id).update(left=1)
+
+        def _race(targets):
+            barrier = threading.Barrier(len(targets))
+            results = []
+            lock = threading.Lock()
+
+            def _worker(fn):
+                connections.close_all()
+                try:
+                    barrier.wait(timeout=5)
+                    res = fn()
+                    with lock:
+                        results.append(res)
+                finally:
+                    connections.close_all()
+
+            threads = [threading.Thread(target=_worker, args=(fn,)) for fn in targets]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+            return results
+
+        # Race 1: Two students ordering the last remaining portion (left=1)
+        def _place_for(u):
+            c = APIClient()
+            c.force_authenticate(user=u)
+            return c.post('/api/orders/', {
+                'lines': [{'mealId': self.meal_a.id, 'qty': 1}],
+                'area': 'Unity',
+                'pickupDay': '2026-11-25',
+            }, format='json').status_code
+
+        statuses = _race([lambda: _place_for(self.student), lambda: _place_for(self.student2)])
+        self.assertEqual(sorted(statuses), [201, 400], statuses)
+        self.meal_a.refresh_from_db()
+        self.assertEqual(self.meal_a.left, 0)
+
+        # Race 2: Concurrent cancel vs complete_by_code on the same order
+        race_order = Order.objects.create(
+            id='STW-PG-RACE2', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('15.00'), fee=Decimal('0.75'), total=Decimal('15.75'),
+            payment_status='paid', prep_stage='ready', handoff_code='789012',
+            lines=[{'mealId': self.meal_z.id, 'qty': 1}],
+        )
+
+        def _cancel_race():
+            c = APIClient()
+            c.force_authenticate(user=self.vendor_user)
+            return c.post(f'/api/orders/{race_order.id}/cancel/', {}, format='json').status_code
+
+        def _complete_race():
+            c = APIClient()
+            c.force_authenticate(user=self.vendor_user)
+            return c.post(f'/api/orders/{race_order.id}/complete/', {'code': '789012'}, format='json').status_code
+
+        race2_statuses = _race([_cancel_race, _complete_race])
+        self.assertEqual(sorted(race2_statuses), [200, 400], race2_statuses)
+        race_order.refresh_from_db()
+        self.assertNotEqual(bool(race_order.cancelled_at), bool(race_order.collected_at))
+
+        # Race 3: Two admins creating payout batches concurrently
+        Order.objects.create(
+            id='STW-PG-RACE3', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='released', settlement_status='released',
+            prep_stage='collected', collected_at=timezone.now(),
+            lines=[{'mealId': self.meal_z.id, 'qty': 1}],
+        )
+
+        def _batch_race():
+            c = APIClient()
+            c.force_authenticate(user=self.admin_user)
+            return c.post('/api/payouts/batches/', {}, format='json').status_code
+
+        race3_statuses = _race([_batch_race, _batch_race])
+        self.assertEqual(sorted(race3_statuses), [201, 400], race3_statuses)
