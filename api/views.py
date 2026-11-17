@@ -86,6 +86,27 @@ def _inactive_vendor_response(user, vendor):
     return None
 
 
+def _terminal_order_response(order):
+    """Returns a 400 Response if an order is already cancelled or collected."""
+    if order.cancelled_at or order.collected_at or order.prep_stage == 'collected':
+        return Response(
+            {'message': 'This order is already completed or cancelled.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return None
+
+
+def _restore_order_stock(order) -> None:
+    """Restores meal stock quantities for every item line on a cancelled order."""
+    for line in order.lines or []:
+        try:
+            qty = int(line.get('qty') or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            Meal.objects.filter(id=str(line.get('mealId'))).update(left=models.F('left') + qty)
+
+
 def _sanitize_media_url(raw_val, max_len: int = 300000) -> str:
     """Allows only empty string, data:image/* URIs, or https:// / relative URLs."""
     val = str(raw_val or '').strip()
@@ -1050,33 +1071,33 @@ def order_detail_view(request, pk):
 def cancel_order_view(request, pk):
     """
     Cancels an order within the cancellation window (120 seconds, before prep starts).
-    Enforces escrow refund states.
+    Enforces escrow refund states under row lock.
     """
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
-
     user = request.user
-    is_owner = (order.customer == user or order.email == user.email)
-    is_order_vendor = (order.vendor and order.vendor.user == user)
-    if not (is_owner or is_order_vendor or is_platform_admin(user)):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-
-    if order.cancelled_at:
-        return Response({'message': 'This order is already cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
-    if order.collected_at or order.prep_stage == 'collected':
-        return Response({'message': 'This order was already handed over and cannot be cancelled. Open a support case instead.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # If student, enforce time window and prep stage
-    if is_owner and not (is_platform_admin(user) or is_order_vendor):
-        if order.prep_stage != 'accepted':
-            return Response({'message': 'The kitchen has already started on this order.'}, status=status.HTTP_400_BAD_REQUEST)
-        elapsed_seconds = (dj_timezone.now() - order.created_at).total_seconds()
-        if elapsed_seconds > 120:
-            return Response({'message': 'This order can no longer be cancelled (120s limit passed).'}, status=status.HTTP_400_BAD_REQUEST)
-
     with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().select_related('vendor').get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        is_owner = (order.customer == user or order.email == user.email)
+        is_order_vendor = (order.vendor and order.vendor.user == user)
+        if not (is_owner or is_order_vendor or is_platform_admin(user)):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if order.cancelled_at:
+            return Response({'message': 'This order is already cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.collected_at or order.prep_stage == 'collected':
+            return Response({'message': 'This order was already handed over and cannot be cancelled. Open a support case instead.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # If student, enforce time window and prep stage
+        if is_owner and not (is_platform_admin(user) or is_order_vendor):
+            if order.prep_stage != 'accepted':
+                return Response({'message': 'The kitchen has already started on this order.'}, status=status.HTTP_400_BAD_REQUEST)
+            elapsed_seconds = (dj_timezone.now() - order.created_at).total_seconds()
+            if elapsed_seconds > 120:
+                return Response({'message': 'This order can no longer be cancelled (120s limit passed).'}, status=status.HTTP_400_BAD_REQUEST)
+
         order.cancelled_at = dj_timezone.now()
         was_paid = order.payment_status in ['paid', 'released']
         if was_paid and order.settlement_status == 'released':
@@ -1086,13 +1107,8 @@ def cancel_order_view(request, pk):
         else:
             order.payment_status = 'cancelled'
 
-        order.save()
-        # Return the portions to the kitchen's stock
-        for line in order.lines or []:
-            try:
-                Meal.objects.filter(id=str(line.get('mealId'))).update(left=models.F('left') + int(line.get('qty') or 0))
-            except (TypeError, ValueError):
-                continue
+        order.save(update_fields=['cancelled_at', 'payment_status'])
+        _restore_order_stock(order)
         record_audit(user.email, 'order_cancelled', 'order', order.id, {'status': 'cancelled'})
 
     return Response(OrderSerializer(order, context={'request': request}).data)
@@ -1388,6 +1404,9 @@ def propose_meetup_view(request, pk):
 
     if not _is_order_participant(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    terminal = _terminal_order_response(order)
+    if terminal:
+        return terminal
 
     place = escape(str(request.data.get('place', '')).strip()[:200])
     if len(place) < 3:
@@ -1421,6 +1440,9 @@ def confirm_meetup_view(request, pk):
 
     if not _is_order_participant(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    terminal = _terminal_order_response(order)
+    if terminal:
+        return terminal
 
     if not order.meetup or not order.meetup.get('place'):
         return Response({'message': 'Nobody has proposed a meeting point yet'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1448,6 +1470,9 @@ def decline_meetup_view(request, pk):
 
     if not _is_order_participant(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    terminal = _terminal_order_response(order)
+    if terminal:
+        return terminal
 
     order.meetup = None
     order.save(update_fields=['meetup'])
@@ -1466,6 +1491,11 @@ def send_order_message_view(request, pk):
 
     if not _is_order_participant(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    terminal = _terminal_order_response(order)
+    if terminal:
+        return terminal
+    if not check_rate_limit(f"order_msg_{request.user.id}", limit=30, window_seconds=60):
+        return Response({'message': 'Too many messages sent. Please slow down.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     text = escape(str(request.data.get('text', '')).strip()[:500])
     # Determine sender role from actual authenticated identity — never trust client input
@@ -1474,7 +1504,9 @@ def send_order_message_view(request, pk):
     if not text:
         return Response({'message': 'Type a message first'}, status=status.HTTP_400_BAD_REQUEST)
 
-    messages = order.messages or []
+    messages = list(order.messages or [])
+    if len(messages) >= 100:
+        return Response({'message': 'Message limit reached for this order.'}, status=status.HTTP_400_BAD_REQUEST)
     messages.append({
         'from': from_role,
         'text': text,
@@ -1500,9 +1532,14 @@ def set_prep_stage_view(request, pk):
     blocked = _inactive_vendor_response(request.user, order.vendor)
     if blocked:
         return blocked
-
-    if order.cancelled_at:
-        return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
+    terminal = _terminal_order_response(order)
+    if terminal:
+        return terminal
+    if order.payment_status not in ('paid', 'released'):
+        return Response(
+            {'message': 'Cannot advance preparation for an unpaid or refunded order.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     stage = request.data.get('stage')
     # Never allow 'collected' via set_prep_stage — collection requires student confirmation or handover code
@@ -1529,25 +1566,26 @@ def mark_collected_view(request, pk):
     This triggers release of escrow payment to the chef.
     Only the customer who placed the order may confirm collection.
     """
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    # IDOR protection: only the order's customer (or admin) may confirm collection
     _collector = request.user
-    if order.customer != _collector and order.email != _collector.email and not is_platform_admin(_collector):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().select_related('vendor', 'customer').get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    if order.cancelled_at:
-        return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
-    if order.payment_status not in ['paid', 'released']:
-        return Response({'message': 'This order was never paid for'}, status=status.HTTP_400_BAD_REQUEST)
+        # IDOR protection: only the order's customer (or admin) may confirm collection
+        if order.customer != _collector and order.email != _collector.email and not is_platform_admin(_collector):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
-    if order.collected_at:
-        return Response(OrderSerializer(order, context={'request': request}).data)
+        if order.cancelled_at:
+            return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.payment_status not in ['paid', 'released']:
+            return Response({'message': 'This order was never paid for'}, status=status.HTTP_400_BAD_REQUEST)
 
-    _release_escrow(order, 'student_confirmed', request.user.email)
+        if order.collected_at:
+            return Response(OrderSerializer(order, context={'request': request}).data)
+
+        _release_escrow(order, 'student_confirmed', _collector.email)
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1560,34 +1598,35 @@ def complete_by_code_view(request, pk):
     Constant-time comparison ensures no timing-attack leakage.
     Releases escrow funds.
     """
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().select_related('vendor').get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    if not _is_order_vendor_or_admin(request.user, order):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-    blocked = _inactive_vendor_response(request.user, order.vendor)
-    if blocked:
-        return blocked
+        if not _is_order_vendor_or_admin(request.user, order):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        blocked = _inactive_vendor_response(request.user, order.vendor)
+        if blocked:
+            return blocked
 
-    if order.cancelled_at:
-        return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.cancelled_at:
+            return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if order.payment_status not in ['paid', 'released']:
-        return Response({'message': 'This order was never paid for'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.payment_status not in ['paid', 'released']:
+            return Response({'message': 'This order was never paid for'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if not check_rate_limit(f"handoff_try_{order.id}", limit=5, window_seconds=600):
-        return Response({'message': 'Too many failed handover code attempts. Please wait 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        if not check_rate_limit(f"handoff_try_{order.id}", limit=5, window_seconds=600):
+            return Response({'message': 'Too many failed handover code attempts. Please wait 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
-    code = str(request.data.get('code', '')).strip()
-    if not code or not order.handoff_code or not secrets.compare_digest(code, str(order.handoff_code).strip()):
-        return Response({'message': 'That code does not match this order'}, status=status.HTTP_400_BAD_REQUEST)
+        code = str(request.data.get('code', '')).strip()
+        if not code or not order.handoff_code or not secrets.compare_digest(code, str(order.handoff_code).strip()):
+            return Response({'message': 'That code does not match this order'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if order.collected_at:
-        return Response(OrderSerializer(order, context={'request': request}).data)
+        if order.collected_at:
+            return Response(OrderSerializer(order, context={'request': request}).data)
 
-    _release_escrow(order, 'handoff_code', request.user.email)
+        _release_escrow(order, 'handoff_code', request.user.email)
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1658,26 +1697,7 @@ def vendor_reviews_view(request, vendorId):
 def create_review_view(request):
     """Customer submits a review for a completed order."""
     order_id = request.data.get('orderId')
-    try:
-        order = Order.objects.get(id=order_id)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    # Only the customer who placed this order may review it
     _reviewer = request.user
-    if order.customer != _reviewer and order.email != _reviewer.email:
-        return Response({'message': 'You can only review your own orders.'}, status=status.HTTP_403_FORBIDDEN)
-
-    # Order must be collected to review
-    if not order.collected_at and order.prep_stage != 'collected':
-        return Response({'message': 'You can only review an order you have collected'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if Review.objects.filter(order_id=order_id).exists():
-        return Response({'message': 'You have already reviewed this order'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if not order.vendor:
-        return Response({'message': 'This kitchen is no longer on STEW, so it cannot be reviewed.'}, status=status.HTTP_400_BAD_REQUEST)
-
     try:
         rating = int(request.data.get('rating', 5))
     except (TypeError, ValueError):
@@ -1687,18 +1707,38 @@ def create_review_view(request):
     tags = [escape(str(t).strip())[:40] for t in raw_tags[:8] if str(t).strip()] if isinstance(raw_tags, list) else []
     text = escape(str(request.data.get('text', '') or '').strip())[:1000]
 
-    review = Review.objects.create(
-        order_id=order_id,
-        vendor=order.vendor,
-        vendor_name=order.vendor_name,
-        customer=request.user,
-        rating=rating,
-        tags=tags,
-        text=text,
-        moderation_status='pending'
-    )
-    _recompute_vendor_rating(order.vendor)
-    record_audit(request.user.email, 'review_submitted', 'review', order_id, {'rating': rating})
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().select_related('vendor', 'customer').get(id=order_id)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Only the customer who placed this order may review it
+        if order.customer != _reviewer and order.email != _reviewer.email:
+            return Response({'message': 'You can only review your own orders.'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Order must be collected to review
+        if not order.collected_at and order.prep_stage != 'collected':
+            return Response({'message': 'You can only review an order you have collected'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Review.objects.filter(order_id=order_id).exists():
+            return Response({'message': 'You have already reviewed this order'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not order.vendor:
+            return Response({'message': 'This kitchen is no longer on STEW, so it cannot be reviewed.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        review = Review.objects.create(
+            order_id=order_id,
+            vendor=order.vendor,
+            vendor_name=order.vendor_name,
+            customer=_reviewer,
+            rating=rating,
+            tags=tags,
+            text=text,
+            moderation_status='pending'
+        )
+        _recompute_vendor_rating(order.vendor)
+        record_audit(_reviewer.email, 'review_submitted', 'review', order_id, {'rating': rating})
     return Response(ReviewSerializer(review).data, status=status.HTTP_201_CREATED)
 
 
@@ -1797,26 +1837,31 @@ def payout_batches_view(request):
         batches = PayoutBatch.objects.all().order_by('-created_at')
         return Response(PayoutBatchSerializer(batches, many=True).data)
 
-    # POST: Create a new payout batch
-    released_orders = Order.objects.filter(
-        settlement_status='released',
-        payout_batch_id__isnull=True,
-        cancelled_at__isnull=True,
-        vendor__active=True,
-    )
-    if not released_orders.exists():
-        return Response({'message': 'Nothing to settle yet — no released orders waiting.'}, status=status.HTTP_400_BAD_REQUEST)
-
+    # POST: Create a new payout batch under row lock so concurrent calls cannot double-settle
     batch_id = _unique_id(PayoutBatch, 'PAY')
-    agg = released_orders.aggregate(
-        total_amount=Sum('subtotal'),
-        period_start=Min('collected_at'),
-        period_end=Max('collected_at'),
-        order_count=Count('id'),
-    )
     now = dj_timezone.now()
 
     with transaction.atomic():
+        locked_ids = list(
+            Order.objects.select_for_update()
+            .filter(
+                settlement_status='released',
+                payout_batch_id__isnull=True,
+                cancelled_at__isnull=True,
+                vendor__active=True,
+            )
+            .values_list('id', flat=True)
+        )
+        if not locked_ids:
+            return Response({'message': 'Nothing to settle yet — no released orders waiting.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        released_orders = Order.objects.filter(id__in=locked_ids)
+        agg = released_orders.aggregate(
+            total_amount=Sum('subtotal'),
+            period_start=Min('collected_at'),
+            period_end=Max('collected_at'),
+            order_count=Count('id'),
+        )
         batch = PayoutBatch.objects.create(
             id=batch_id,
             amount=round(agg['total_amount'] or 0, 2),
@@ -1862,10 +1907,16 @@ def support_cases_view(request):
     raw_vendor = str(data.get('vendor') or '').strip()
     if raw_order_id:
         order_obj = Order.objects.filter(id=raw_order_id).first()
+        if not order_obj:
+            return Response({'message': 'Order not found.'}, status=status.HTTP_404_NOT_FOUND)
         # A student may only attach orders they are part of — no probing other orders
-        if order_obj and not _is_order_participant(user, order_obj):
+        if not _is_order_participant(user, order_obj):
             return Response({'message': 'You can only report your own orders.'}, status=status.HTTP_403_FORBIDDEN)
-        if order_obj and not raw_vendor:
+        if order_obj.payment_status in ('refunded', 'refund_pending', 'cancelled'):
+            return Response({'message': 'This order has already been refunded or cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
+        if SupportCase.objects.filter(user=user, order=escape(raw_order_id)).exists():
+            return Response({'message': 'An open support case already exists for this order.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not raw_vendor:
             raw_vendor = order_obj.vendor_name
     raw_note = str(data.get('note') or data.get('description') or '').strip()[:1000]
 
@@ -1899,6 +1950,7 @@ def support_case_resolve_view(request, code):
         with transaction.atomic():
             order = Order.objects.select_for_update().filter(id=case.order).first()
             if order and not order.cancelled_at:
+                was_uncollected = not order.collected_at and order.prep_stage != 'collected'
                 now = dj_timezone.now()
                 order.cancelled_at = now
                 was_paid = order.payment_status in ('paid', 'released')
@@ -1909,6 +1961,8 @@ def support_case_resolve_view(request, code):
                 else:
                     order.payment_status = 'cancelled'
                 order.save(update_fields=['cancelled_at', 'payment_status'])
+                if was_uncollected:
+                    _restore_order_stock(order)
                 record_audit(request.user.email, f'case_refund_order_cancelled', 'order', order.id, {'case': case.code})
 
     record_audit(request.user.email, f'case_{action}', 'support_case', case.code, {'order': case.order, 'vendor': case.vendor})

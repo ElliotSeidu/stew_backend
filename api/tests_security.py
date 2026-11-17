@@ -224,3 +224,212 @@ class VendorGateSecurityTests(TestCase):
         self.assertEqual(batch_res.status_code, 400)
         self.suspended_order.refresh_from_db()
         self.assertIsNone(self.suspended_order.payout_batch_id)
+
+
+class OrderStateAndConcurrencySecurityTests(TestCase):
+    """
+    FINDING-02 & FINDING-03: Terminal orders (cancelled/collected) and unpaid
+    orders cannot regress in prep stage or accept meetup/message mutations;
+    support cases reject duplicates on refunded orders and restore stock when
+    refunding an uncollected order.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_superuser(
+            email='ord.admin@st.knust.edu.gh',
+            password='AdminPassword123',
+            full_name='Order Admin',
+        )
+        cls.admin_token = generate_jwt_token(cls.admin)
+
+        cls.student = User.objects.create_user(
+            email='ord.student@st.knust.edu.gh',
+            password='Password123',
+            full_name='Order Student',
+            reference_id='20881001',
+            phone='0248100001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+        )
+        cls.student_token = generate_jwt_token(cls.student)
+
+        cls.vendor_user = User.objects.create_user(
+            email='ord.vendor@st.knust.edu.gh',
+            password='Password123',
+            full_name='Order Chef',
+            reference_id='20881002',
+            phone='0248100002',
+            hall='Unity Hall (Conti)',
+            verified=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='State Safe Kitchen',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_sec_ord',
+            user=cls.vendor_user,
+            name='State Safe Kitchen',
+            hall='Unity Hall (Conti)',
+            open=True,
+            active=True,
+        )
+        cls.vendor_token = generate_jwt_token(cls.vendor_user)
+        cls.meal = Meal.objects.create(
+            id='m_sec_ord',
+            vendor=cls.vendor,
+            name='State Banku',
+            price=30.0,
+            cat='Banku',
+            left=10,
+            on=True,
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_collected_and_unpaid_orders_cannot_change_prep_stage(self):
+        unpaid = Order.objects.create(
+            id='STW-UNP9',
+            customer=self.student,
+            customer_name=self.student.full_name,
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'price': 30.0, 'qty': 1}],
+            subtotal=30.0,
+            fee=1.5,
+            total=31.5,
+            pickup_day='2026-11-20',
+            prep_stage='accepted',
+            payment_status='pending',
+            settlement_status='pending',
+        )
+        collected = Order.objects.create(
+            id='STW-COL9',
+            customer=self.student,
+            customer_name=self.student.full_name,
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'price': 30.0, 'qty': 1}],
+            subtotal=30.0,
+            fee=1.5,
+            total=31.5,
+            pickup_day='2026-11-20',
+            prep_stage='collected',
+            collected_at=timezone.now(),
+            payment_status='released',
+            settlement_status='released',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.vendor_token}')
+        unpaid_res = self.client.post(f'/api/orders/{unpaid.id}/prep/', {'stage': 'ready'}, format='json')
+        self.assertEqual(unpaid_res.status_code, 400)
+
+        collected_res = self.client.post(f'/api/orders/{collected.id}/prep/', {'stage': 'cooking'}, format='json')
+        self.assertEqual(collected_res.status_code, 400)
+        collected.refresh_from_db()
+        self.assertEqual(collected.prep_stage, 'collected')
+
+    def test_terminal_orders_block_meetup_and_message_mutations(self):
+        cancelled = Order.objects.create(
+            id='STW-CAN9',
+            customer=self.student,
+            customer_name=self.student.full_name,
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'price': 30.0, 'qty': 1}],
+            subtotal=30.0,
+            fee=1.5,
+            total=31.5,
+            pickup_day='2026-11-20',
+            prep_stage='accepted',
+            payment_status='refunded',
+            cancelled_at=timezone.now(),
+            meetup={'place': 'Old spot', 'confirmedBy': ['student'], 'agreed': False},
+        )
+        collected = Order.objects.create(
+            id='STW-COL8',
+            customer=self.student,
+            customer_name=self.student.full_name,
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'price': 30.0, 'qty': 1}],
+            subtotal=30.0,
+            fee=1.5,
+            total=31.5,
+            pickup_day='2026-11-20',
+            prep_stage='collected',
+            collected_at=timezone.now(),
+            payment_status='released',
+            settlement_status='released',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.student_token}')
+        for o in (cancelled, collected):
+            self.assertEqual(
+                self.client.post(f'/api/orders/{o.id}/meetup/propose/', {'place': 'Tech Junction'}, format='json').status_code,
+                400,
+            )
+            self.assertEqual(
+                self.client.post(f'/api/orders/{o.id}/messages/', {'text': 'Late msg'}, format='json').status_code,
+                400,
+            )
+        self.assertEqual(self.client.post(f'/api/orders/{cancelled.id}/meetup/confirm/', format='json').status_code, 400)
+        self.assertEqual(self.client.post(f'/api/orders/{cancelled.id}/meetup/decline/', format='json').status_code, 400)
+
+    def test_support_case_duplicate_and_refund_stock_restoration(self):
+        # Student places an order for 3 portions (stock drops 10 -> 7)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.student_token}')
+        order_res = self.client.post('/api/orders/', {
+            'lines': [{'mealId': self.meal.id, 'qty': 3}],
+            'area': 'Unity Hall (Conti)',
+            'pickupDay': '2026-11-20',
+        }, format='json')
+        self.assertEqual(order_res.status_code, 201)
+        order_id = order_res.data['id']
+        Order.objects.filter(pk=order_id).update(payment_status='paid', paid_at=timezone.now())
+        self.meal.refresh_from_db()
+        self.assertEqual(self.meal.left, 7)
+
+        c1 = self.client.post('/api/support/cases/', {
+            'type': 'missing',
+            'orderId': order_id,
+            'note': 'Order stuck',
+        }, format='json')
+        self.assertEqual(c1.status_code, 201)
+
+        # Duplicate open case by same user for same order must be blocked
+        c2 = self.client.post('/api/support/cases/', {
+            'type': 'missing',
+            'orderId': order_id,
+            'note': 'Duplicate request',
+        }, format='json')
+        self.assertEqual(c2.status_code, 400)
+
+        # Admin refunding uncollected order must restore Meal.left (7 -> 10)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        res = self.client.post(f"/api/support/cases/{c1.data['code']}/resolve/", {'action': 'refund'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.meal.refresh_from_db()
+        self.assertEqual(self.meal.left, 10)
+
+        # New case after refund on already-refunded order must be blocked
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.student_token}')
+        c3 = self.client.post('/api/support/cases/', {
+            'type': 'missing',
+            'orderId': order_id,
+            'note': 'Second refund attempt',
+        }, format='json')
+        self.assertEqual(c3.status_code, 400)
