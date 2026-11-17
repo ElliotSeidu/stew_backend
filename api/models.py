@@ -1,3 +1,4 @@
+from decimal import Decimal
 import uuid
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
@@ -107,7 +108,7 @@ class Meal(models.Model):
     vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, related_name='meals')
     name = models.CharField(max_length=150)
     desc = models.TextField(blank=True, default='')
-    price = models.FloatField(default=0.0)
+    price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.50'))
     cat = models.CharField(max_length=64, default='Soups')
     left = models.IntegerField(default=10)
     kinds = models.JSONField(default=list, blank=True)
@@ -119,6 +120,10 @@ class Meal(models.Model):
 
     class Meta:
         ordering = ['id']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(price__gte=Decimal('0.50')), name='meal_price_gte_0_50'),
+            models.CheckConstraint(condition=models.Q(left__gte=0), name='meal_left_non_negative'),
+        ]
 
     def __str__(self):
         return f"{self.name} - {self.vendor.name}"
@@ -135,9 +140,9 @@ class Order(models.Model):
     vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True, related_name='vendor_orders')
     vendor_name = models.CharField(max_length=150)
     lines = models.JSONField(default=list)
-    subtotal = models.FloatField(default=0.0)
-    fee = models.FloatField(default=0.0)
-    total = models.FloatField(default=0.0)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    total = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     order_note = models.TextField(blank=True, default='')
     handoff_code = models.CharField(max_length=16, blank=True, default='')
     pickup_day = models.CharField(max_length=32)
@@ -147,12 +152,12 @@ class Order(models.Model):
     
     payment_status = models.CharField(max_length=32, default='pending')  # pending, paid, released, refund_pending, refunded, cancelled
     payment_provider = models.CharField(max_length=32, default='paystack')
-    payment_reference = models.CharField(max_length=128, null=True, blank=True)
+    payment_reference = models.CharField(max_length=128, null=True, blank=True, unique=True, db_index=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     
     settlement_status = models.CharField(max_length=32, default='pending')  # pending, released
     settlement_released_at = models.DateTimeField(null=True, blank=True)
-    settlement_net = models.FloatField(default=0.0)
+    settlement_net = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     
     meetup = models.JSONField(null=True, blank=True)
     messages = models.JSONField(default=list, blank=True)
@@ -167,6 +172,12 @@ class Order(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(subtotal__gte=Decimal('0.00')), name='order_subtotal_non_negative'),
+            models.CheckConstraint(condition=models.Q(fee__gte=Decimal('0.00')), name='order_fee_non_negative'),
+            models.CheckConstraint(condition=models.Q(total__gte=Decimal('0.00')), name='order_total_non_negative'),
+            models.CheckConstraint(condition=models.Q(settlement_net__gte=Decimal('0.00')), name='order_settlement_net_non_negative'),
+        ]
 
     def __str__(self):
         return f"{self.id} ({self.vendor_name}) - {self.total} GHS"
@@ -187,6 +198,9 @@ class Review(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(rating__gte=1) & models.Q(rating__lte=5), name='review_rating_1_to_5'),
+        ]
 
 
 class Compliance(models.Model):
@@ -205,7 +219,7 @@ class Compliance(models.Model):
 
 class PayoutBatch(models.Model):
     id = models.CharField(max_length=64, primary_key=True)  # e.g. PAY-1001
-    amount = models.FloatField(default=0.0)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     currency = models.CharField(max_length=16, default='GHS')
     status = models.CharField(max_length=32, default='paid')
     order_count = models.IntegerField(default=0)
@@ -218,6 +232,9 @@ class PayoutBatch(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gte=Decimal('0.00')), name='payout_batch_amount_non_negative'),
+        ]
 
 
 class SupportCase(models.Model):

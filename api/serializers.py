@@ -84,6 +84,7 @@ class MealSerializer(serializers.ModelSerializer):
     vendorId = serializers.CharField(source='vendor.id', read_only=True)
     vendorName = serializers.CharField(source='vendor.name', read_only=True)
     hall = serializers.CharField(source='vendor.hall', read_only=True)
+    price = serializers.FloatField()
     rating = serializers.SerializerMethodField()
     reviews = serializers.IntegerField(source='vendor.reviews', read_only=True)
     open = serializers.BooleanField(source='vendor.open', read_only=True)
@@ -107,6 +108,9 @@ class OrderSerializer(serializers.ModelSerializer):
     vendorId = serializers.CharField(source='vendor.id', read_only=True)
     vendorName = serializers.CharField(source='vendor_name', read_only=True)
     customer = serializers.CharField(source='customer_name')
+    subtotal = serializers.FloatField()
+    fee = serializers.FloatField()
+    total = serializers.FloatField()
     handoffCode = serializers.SerializerMethodField()
     pickupDay = serializers.CharField(source='pickup_day')
     pickupSlot = serializers.CharField(source='pickup_slot')
@@ -165,7 +169,7 @@ class OrderSerializer(serializers.ModelSerializer):
         return {
             'status': obj.settlement_status,
             'releasedAt': released_at_ts,
-            'net': obj.settlement_net,
+            'net': round(float(obj.settlement_net or 0), 2),
         }
 
     def get_status(self, obj):
@@ -222,6 +226,7 @@ class ComplianceSerializer(serializers.ModelSerializer):
 
 
 class PayoutBatchSerializer(serializers.ModelSerializer):
+    amount = serializers.FloatField()
     orderCount = serializers.IntegerField(source='order_count')
     periodStart = serializers.SerializerMethodField()
     periodEnd = serializers.SerializerMethodField()

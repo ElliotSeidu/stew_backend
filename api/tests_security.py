@@ -5,6 +5,8 @@ Each test class demonstrates a vulnerability/loophole before remediation and
 stays as a regression guard after the fix.
 """
 from datetime import timedelta
+from decimal import Decimal
+from django.db import IntegrityError, models, transaction
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -538,3 +540,189 @@ class AuthAndOtpSecurityTests(TestCase):
         }, format='json')
         self.assertEqual(res.status_code, 400)
         self.assertFalse(User.objects.filter(email='clone.ref@st.knust.edu.gh').exists())
+
+
+class MoneyPrecisionAndConstraintsTest(TestCase):
+    """
+    FINDING-06 / Section 4 Mandatory Fix:
+      - Money fields must be DecimalField(max_digits=10, decimal_places=2).
+      - Order.payment_reference must have unique=True while allowing multiple NULLs.
+      - DB CheckConstraints reject negative stock/totals, price < 0.50, and ratings outside 1..5.
+      - Decimal arithmetic prevents IEEE-754 float drift while keeping JSON responses numeric.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='dec.student@st.knust.edu.gh',
+            password='Password123',
+            full_name='Decimal Student',
+            reference_id='20883001',
+            phone='0248300001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+        )
+        cls.student_token = generate_jwt_token(cls.student)
+        cls.vendor_user = User.objects.create_user(
+            email='dec.vendor@st.knust.edu.gh',
+            password='Password123',
+            full_name='Decimal Chef',
+            reference_id='20883002',
+            phone='0248300002',
+            hall='Unity Hall (Conti)',
+            verified=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='Exact Pesewa Pot',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_dec1',
+            user=cls.vendor_user,
+            name='Exact Pesewa Pot',
+            hall='Unity Hall (Conti)',
+            open=True,
+            active=True,
+        )
+        cls.meal = Meal.objects.create(
+            id='m_dec1',
+            vendor=cls.vendor,
+            name='Precision Jollof',
+            price=19.99,
+            cat='Rice & stews',
+            left=20,
+            on=True,
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_money_fields_are_decimal_and_constraints_enforced(self):
+        for model_cls, field_name in [
+            (Meal, 'price'),
+            (Order, 'subtotal'),
+            (Order, 'fee'),
+            (Order, 'total'),
+            (Order, 'settlement_net'),
+            (PayoutBatch, 'amount'),
+        ]:
+            field = model_cls._meta.get_field(field_name)
+            self.assertIsInstance(field, models.DecimalField, f"{model_cls.__name__}.{field_name} must be DecimalField")
+            self.assertEqual(field.max_digits, 10)
+            self.assertEqual(field.decimal_places, 2)
+
+        # Unique payment_reference (allowing multiple NULLs)
+        Order.objects.create(
+            id='STW-NULL1',
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            pickup_day='2026-11-20',
+            payment_reference=None,
+        )
+        Order.objects.create(
+            id='STW-NULL2',
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            pickup_day='2026-11-20',
+            payment_reference=None,
+        )
+        Order.objects.create(
+            id='STW-REF1',
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            pickup_day='2026-11-20',
+            payment_reference='PSK-UNIQ-1',
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Order.objects.create(
+                    id='STW-REF2',
+                    email=self.student.email,
+                    phone=self.student.phone,
+                    area='Campus',
+                    vendor=self.vendor,
+                    vendor_name=self.vendor.name,
+                    pickup_day='2026-11-20',
+                    payment_reference='PSK-UNIQ-1',
+                )
+
+        # CheckConstraints: negative stock, price < 0.50, negative total, invalid rating
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Meal.objects.create(id='m_neg_stock', vendor=self.vendor, name='Bad Stock', price=Decimal('10.00'), left=-1)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Meal.objects.create(id='m_low_price', vendor=self.vendor, name='Too Cheap', price=Decimal('0.25'), left=1)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Order.objects.create(
+                    id='STW-NEG',
+                    email=self.student.email,
+                    phone=self.student.phone,
+                    area='Campus',
+                    vendor=self.vendor,
+                    vendor_name=self.vendor.name,
+                    pickup_day='2026-11-20',
+                    total=Decimal('-5.00'),
+                )
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Review.objects.create(order_id='STW-BADREV', vendor=self.vendor, customer=self.student, rating=6)
+
+    def test_order_totals_use_exact_decimal_rounding_and_numeric_json(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.student_token}')
+        res = self.client.post('/api/orders/', {
+            'lines': [{'mealId': self.meal.id, 'qty': 3}],
+            'area': 'Unity Hall (Conti)',
+            'pickupDay': '2026-11-20',
+        }, format='json')
+        self.assertEqual(res.status_code, 201)
+        order = Order.objects.get(pk=res.data['id'])
+        self.assertEqual(order.subtotal, Decimal('59.97'))
+        self.assertEqual(order.fee, Decimal('3.00'))
+        self.assertEqual(order.total, Decimal('62.97'))
+        self.assertIsInstance(res.data['subtotal'], float)
+        self.assertAlmostEqual(res.data['subtotal'], 59.97, places=2)
+        self.assertAlmostEqual(res.data['fee'], 3.00, places=2)
+        self.assertAlmostEqual(res.data['total'], 62.97, places=2)
+
+    def test_migration_0003_normalizes_float_drift_and_blank_payment_refs(self):
+        import importlib
+        from django.apps import apps
+
+        mig = importlib.import_module('api.migrations.0003_decimal_money_and_constraints')
+        self.assertEqual(mig._quantize(59.970000000000006), Decimal('59.97'))
+        self.assertEqual(mig._quantize(2.9999999999999996), Decimal('3.00'))
+        self.assertEqual(mig._quantize(0.10, Decimal('0.50')), Decimal('0.50'))
+
+        # Simulate legacy empty-string payment_reference before normalization
+        legacy = Order.objects.create(
+            id='STW-LEG1',
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            pickup_day='2026-11-20',
+            subtotal=59.97,
+            fee=3.00,
+            total=62.97,
+            payment_reference='',
+        )
+        mig.normalize_existing_rows(apps, None)
+        legacy.refresh_from_db()
+        self.assertIsNone(legacy.payment_reference)
+        self.assertEqual(legacy.subtotal, Decimal('59.97'))

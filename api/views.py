@@ -5,6 +5,7 @@ import logging
 import requests as http_requests
 import secrets
 from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import models, transaction
@@ -117,15 +118,17 @@ def _sanitize_media_url(raw_val, max_len: int = 300000) -> str:
     raise ValidationError('Image or logo must be a data:image/ URI or an https:// URL.')
 
 
-def _safe_price(raw, field='price') -> float:
-    """Parses a GHS price; rejects NaN/inf/negative/zero and absurd values."""
-    try:
-        val = float(raw)
-    except (TypeError, ValueError):
+def _safe_price(raw, field='price') -> Decimal:
+    """Parses a GHS price as 2-decimal Decimal; rejects NaN/inf/negative/zero and absurd values."""
+    if isinstance(raw, bool):
         raise ValidationError({field: 'Price must be a number.'})
-    if val != val or val in (float('inf'), float('-inf')) or val < 0.5 or val > 10000:
+    try:
+        val = Decimal(str(raw).strip())
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValidationError({field: 'Price must be a number.'})
+    if not val.is_finite() or val < Decimal('0.50') or val > Decimal('10000.00'):
         raise ValidationError({field: 'Price must be between GH₵ 0.50 and GH₵ 10,000.'})
-    return round(val, 2)
+    return val.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
 def _safe_int(raw, lo: int, hi: int, field: str, default=None) -> int:
@@ -979,11 +982,12 @@ def orders_view(request):
             line_vendor = db_meal.vendor
         elif db_meal.vendor_id != line_vendor.id:
             return Response({'errors': {'lines': 'A tray can only contain food from one kitchen.'}}, status=status.HTTP_400_BAD_REQUEST)
+        line_price = Decimal(str(db_meal.price)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         requested_qty[db_meal.id] = requested_qty.get(db_meal.id, 0) + qty
         validated_lines.append({
             'mealId': db_meal.id,
             'name': db_meal.name,
-            'price': round(float(db_meal.price), 2),
+            'price': float(line_price),
             'qty': qty,
             'note': escape(str(line.get('note', '') or '').strip())[:200],
             'image': db_meal.image[:300] if db_meal.image.startswith(('https://', '/')) else '',
@@ -996,10 +1000,13 @@ def orders_view(request):
     if vendor.user_id and vendor.user_id == user.id:
         return Response({'message': 'You cannot order from your own kitchen.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Recalculate subtotal from server-validated lines (prevents client-side price tampering)
-    subtotal = round(sum(line['price'] * line['qty'] for line in validated_lines), 2)
-    fee = round(subtotal * 0.05, 2)
-    total = round(subtotal + fee, 2)
+    # Recalculate subtotal from server-validated lines using exact Decimal math
+    subtotal = sum(
+        (Decimal(str(line['price'])) * Decimal(line['qty']) for line in validated_lines),
+        Decimal('0.00'),
+    ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    fee = (subtotal * Decimal('0.05')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    total = (subtotal + fee).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     # The order always belongs to the authenticated account's verified email —
     # never a client-supplied address (that would grant another student access to it).
@@ -1048,7 +1055,7 @@ def orders_view(request):
             settlement_status='pending',
             messages=[]
         )
-        record_audit(user.email, 'order_created', 'order', order.id, {'total': total, 'vendor': vendor_name})
+        record_audit(user.email, 'order_created', 'order', order.id, {'total': float(total), 'vendor': vendor_name})
 
     return Response(OrderSerializer(order, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
@@ -1152,7 +1159,7 @@ def init_payment_view(request):
         return Response({'message': 'This order can no longer be paid for'}, status=status.HTTP_400_BAD_REQUEST)
 
     reference = f"PSK-{secrets.token_hex(8).upper()}"
-    amount_pesewas = int(round(order.total * 100))
+    amount_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
     public_key = getattr(settings, 'PAYSTACK_PUBLIC_KEY', '')
     secret_key = getattr(settings, 'PAYSTACK_SECRET_KEY', '')
 
@@ -1242,7 +1249,8 @@ def _paystack_verify(reference, order):
     if tx.get('reference') != reference or str(tx.get('currency', 'GHS')).upper() != 'GHS':
         return False, status.HTTP_402_PAYMENT_REQUIRED, 'Payment details do not match this order.'
     # Validate amount to prevent partial-payment attacks
-    if int(tx.get('amount') or 0) < int(round(order.total * 100)):
+    expected_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+    if int(tx.get('amount') or 0) < expected_pesewas:
         logger.warning("Payment amount mismatch for order %s (ref=%s)", order.id, reference)
         return False, status.HTTP_402_PAYMENT_REQUIRED, 'Payment amount does not match order total.'
     return True, status.HTTP_200_OK, ''
@@ -1360,12 +1368,12 @@ def payouts_ledger_view(request):
     fees_agg = paid_qs.aggregate(fees_sum=Sum('fee'), total_collected=Sum('total'))
 
     return Response({
-        'held': round(held_agg['held_sum'] or 0, 2),
-        'released': round(released_agg['released_sum'] or 0, 2),
+        'held': round(float(held_agg['held_sum'] or 0), 2),
+        'released': round(float(released_agg['released_sum'] or 0), 2),
         'heldCount': held_agg['held_count'] or 0,
         'releasedCount': released_agg['released_count'] or 0,
-        'collected': round(fees_agg['total_collected'] or 0, 2),
-        'fees': round(fees_agg['fees_sum'] or 0, 2),
+        'collected': round(float(fees_agg['total_collected'] or 0), 2),
+        'fees': round(float(fees_agg['fees_sum'] or 0), 2),
         'note': "STEW holds each payment until the student confirms collection, then releases it to you. You keep the full menu price; the 5% fee is added to the student's total."
     })
 
@@ -1872,9 +1880,10 @@ def payout_batches_view(request):
             period_end=Max('collected_at'),
             order_count=Count('id'),
         )
+        batch_amount = Decimal(str(agg['total_amount'] or '0.00')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         batch = PayoutBatch.objects.create(
             id=batch_id,
-            amount=round(agg['total_amount'] or 0, 2),
+            amount=batch_amount,
             currency='GHS',
             status='paid',
             order_count=agg['order_count'] or 0,
@@ -1885,7 +1894,7 @@ def payout_batches_view(request):
             paid_at=now
         )
         released_orders.update(payout_batch_id=batch.id)
-        record_audit(request.user.email, 'payout_batch_created', 'payout_batch', batch.id, {'amount': batch.amount})
+        record_audit(request.user.email, 'payout_batch_created', 'payout_batch', batch.id, {'amount': float(batch.amount)})
 
     return Response(PayoutBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
 
