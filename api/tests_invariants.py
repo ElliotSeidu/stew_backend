@@ -565,7 +565,14 @@ class AdminUnificationMatrixTest(TestCase):
     # --- 8. GET /api/admin/users/ (IsAdminUser) ---
     def test_matrix_08_admin_users_list(self):
         self._auth('admin_only')
-        self.assertEqual(self.client.get('/api/admin/users/').status_code, 200)
+        res = self.client.get('/api/admin/users/')
+        self.assertEqual(res.status_code, 200)
+        by_email = {u['email']: u for u in res.data}
+        self.assertTrue(by_email[self.u_admin.email]['isAdmin'])
+        self.assertFalse(by_email[self.u_role.email]['isAdmin'])
+        self.assertFalse(by_email[self.u_staff.email]['isAdmin'])
+        self.assertFalse(by_email[self.u_acct.email]['isAdmin'])
+        self.assertFalse(by_email[self.u_cust.email]['isAdmin'])
         for k in self.non_admins:
             with self.subTest(user=k):
                 self._auth(k)

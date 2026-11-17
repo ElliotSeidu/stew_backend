@@ -281,10 +281,11 @@ class AdminUserSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     accountType = serializers.CharField(source='account_type', read_only=True)
     active = serializers.BooleanField(source='is_active')
+    isAdmin = serializers.BooleanField(source='is_admin', read_only=True)
 
     class Meta:
         model = User
-        fields = ['id', 'name', 'email', 'role', 'accountType', 'active', 'verified', 'hall']
+        fields = ['id', 'name', 'email', 'role', 'accountType', 'isAdmin', 'active', 'verified', 'hall']
 
     def get_name(self, obj):
         return obj.full_name or obj.email.split('@')[0]
