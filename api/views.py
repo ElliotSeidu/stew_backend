@@ -8,6 +8,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import models, transaction
+from django.db.models import Exists, OuterRef
 from django.utils import timezone as dj_timezone
 from django.utils.html import strip_tags
 from rest_framework import status
@@ -659,9 +660,9 @@ def meals_list_view(request):
             if not auth_res:
                 return Response({'message': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
             user, _ = auth_res
-            meals = Meal.objects.filter(vendor__user=user).order_by('-created_at')
+            meals = Meal.objects.select_related('vendor').filter(vendor__user=user).order_by('-created_at')
             return Response(MealSerializer(meals, many=True).data)
-        meals = Meal.objects.filter(on=True, vendor__active=True)
+        meals = Meal.objects.select_related('vendor').filter(on=True, vendor__active=True)
         return Response(MealSerializer(meals, many=True).data)
 
     # Adding a meal requires vendor authentication
@@ -849,22 +850,24 @@ def orders_view(request):
     if request.method == 'GET':
         scope = request.query_params.get('scope', '').strip().lower()
         if user.is_admin or user.role == 'admin':
-            orders = Order.objects.all().order_by('-created_at')
+            orders = Order.objects.select_related('vendor', 'customer').all().order_by('-created_at')
         elif scope == 'vendor' and (user.is_vendor or user.role in ['vendor', 'both']):
-            orders = Order.objects.filter(vendor__user=user).order_by('-created_at')
+            orders = Order.objects.select_related('vendor', 'customer').filter(vendor__user=user).order_by('-created_at')
         elif scope == 'customer':
-            orders = Order.objects.filter(
+            orders = Order.objects.select_related('vendor', 'customer').filter(
                 models.Q(customer=user) | models.Q(email=user.email)
             ).order_by('-created_at')
         elif user.is_vendor or user.role in ['vendor', 'both']:
             # Vendors see both orders for their kitchen and personal customer orders
-            orders = Order.objects.filter(
+            orders = Order.objects.select_related('vendor', 'customer').filter(
                 models.Q(vendor__user=user) | models.Q(customer=user) | models.Q(email=user.email)
             ).distinct().order_by('-created_at')
         else:
-            orders = Order.objects.filter(
+            orders = Order.objects.select_related('vendor', 'customer').filter(
                 models.Q(customer=user) | models.Q(email=user.email)
             ).order_by('-created_at')
+        # Annotate whether each order has a review to avoid N+1 queries in OrderSerializer.get_reviewed
+        orders = orders.annotate(_has_review=Exists(Review.objects.filter(order_id=OuterRef('pk'))))
         return Response(OrderSerializer(orders, many=True, context={'request': request}).data)
 
     # POST: Place order
@@ -985,7 +988,7 @@ def order_detail_view(request, pk):
     Protected against IDOR: Only customer, assigned vendor, or admin can access.
     """
     try:
-        order = Order.objects.get(id=pk)
+        order = Order.objects.select_related('vendor', 'customer').get(id=pk)
     except Order.DoesNotExist:
         return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 

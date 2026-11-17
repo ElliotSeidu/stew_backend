@@ -23,12 +23,18 @@ class UserSerializer(serializers.ModelSerializer):
             'prep', 'payout', 'logo', 'verified', 'vendorId', 'kitchenOpen'
         ]
 
+    def _get_vendor(self, obj):
+        """Returns the first vendor profile, cached per serializer call to avoid N+1."""
+        if not hasattr(obj, '_cached_vendor'):
+            obj._cached_vendor = obj.vendor_profiles.first() if hasattr(obj, 'vendor_profiles') else None
+        return obj._cached_vendor
+
     def get_vendorId(self, obj):
-        vendor = obj.vendor_profiles.first() if hasattr(obj, 'vendor_profiles') else None
+        vendor = self._get_vendor(obj)
         return vendor.id if vendor else None
 
     def get_kitchenOpen(self, obj):
-        vendor = obj.vendor_profiles.first() if hasattr(obj, 'vendor_profiles') else None
+        vendor = self._get_vendor(obj)
         return vendor.open if vendor else True
 
 
@@ -128,6 +134,9 @@ class OrderSerializer(serializers.ModelSerializer):
         ]
 
     def get_reviewed(self, obj):
+        # Use annotation from orders_view queryset when available (avoids N+1 on list views)
+        if hasattr(obj, '_has_review'):
+            return bool(obj._has_review)
         return Review.objects.filter(order_id=obj.id).exists()
 
     def get_handoffCode(self, obj):
