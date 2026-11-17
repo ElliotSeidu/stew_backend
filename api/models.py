@@ -277,3 +277,13 @@ class AnalyticsEvent(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+
+class RateLimitBucket(models.Model):
+    key = models.CharField(max_length=255, primary_key=True)
+    count = models.IntegerField(default=0)
+    window_start = models.DateTimeField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']

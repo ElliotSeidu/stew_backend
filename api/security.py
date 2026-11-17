@@ -1,16 +1,30 @@
 import hashlib
 import hmac
 import secrets
-import time
 from datetime import datetime, timedelta, timezone
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
 import jwt
 
-# In-memory rate limiting cache for sensitive endpoints (IP / identifier based).
-# PRODUCTION NOTE: Replace _RATE_LIMIT_CACHE with a Redis-backed Django cache for
-# multi-worker deployments — this in-memory dict resets on every Gunicorn worker restart.
-_RATE_LIMIT_CACHE = {}
+
+class _RateLimitCacheStore(dict):
+    """Compatibility store so _RATE_LIMIT_CACHE.clear() resets DB buckets in tests."""
+
+    def clear(self):
+        super().clear()
+        try:
+            from django.core.cache import cache
+            cache.clear()
+        except Exception:
+            pass
+        try:
+            from api.models import RateLimitBucket
+            RateLimitBucket.objects.all().delete()
+        except Exception:
+            pass
+
+
+_RATE_LIMIT_CACHE = _RateLimitCacheStore()
 
 
 def hash_token(token: str) -> str:
@@ -69,24 +83,40 @@ def decode_jwt_token(token: str) -> dict:
 
 def check_rate_limit(key: str, limit: int = 5, window_seconds: int = 60) -> bool:
     """
-    Simple in-memory sliding-window rate limiter.
+    Persistent atomic DB-backed sliding-window rate limiter.
+    Survives process restarts and works across multiple worker processes.
     Returns True if allowed, False if exceeded.
-    PRODUCTION: Replace with Redis-backed cache for multi-worker safety.
     """
-    now = time.time()
-    if len(_RATE_LIMIT_CACHE) > 5000:
-        stale_keys = [
-            k for k, ts in _RATE_LIMIT_CACHE.items()
-            if not ts or (now - ts[-1]) >= window_seconds
-        ]
-        for k in stale_keys:
-            _RATE_LIMIT_CACHE.pop(k, None)
-    attempts = _RATE_LIMIT_CACHE.get(key, [])
-    # Filter attempts within the sliding window
-    attempts = [t for t in attempts if now - t < window_seconds]
-    if len(attempts) >= limit:
-        _RATE_LIMIT_CACHE[key] = attempts
-        return False
-    attempts.append(now)
-    _RATE_LIMIT_CACHE[key] = attempts
-    return True
+    from django.db import IntegrityError, transaction
+    from django.utils import timezone as dj_timezone
+    from api.models import RateLimitBucket
+
+    bucket_key = key if len(key) <= 255 else hashlib.sha256(key.encode('utf-8')).hexdigest()
+    now = dj_timezone.now()
+    window = timedelta(seconds=window_seconds)
+
+    with transaction.atomic():
+        bucket = RateLimitBucket.objects.select_for_update().filter(key=bucket_key).first()
+        if bucket is None:
+            try:
+                with transaction.atomic():
+                    RateLimitBucket.objects.create(key=bucket_key, count=1, window_start=now)
+                    _RATE_LIMIT_CACHE[bucket_key] = [now.timestamp()]
+                    return True
+            except IntegrityError:
+                bucket = RateLimitBucket.objects.select_for_update().get(key=bucket_key)
+
+        if (now - bucket.window_start) >= window:
+            bucket.count = 1
+            bucket.window_start = now
+            bucket.save(update_fields=['count', 'window_start', 'updated_at'])
+            _RATE_LIMIT_CACHE[bucket_key] = [now.timestamp()]
+            return True
+
+        if bucket.count >= limit:
+            return False
+
+        bucket.count += 1
+        bucket.save(update_fields=['count', 'updated_at'])
+        _RATE_LIMIT_CACHE.setdefault(bucket_key, []).append(now.timestamp())
+        return True

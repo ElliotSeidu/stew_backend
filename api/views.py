@@ -1551,10 +1551,11 @@ def _release_escrow(order, collected_via: str, actor_email: str) -> None:
         order.settlement_released_at = now
         order.settlement_net = order.subtotal
         order.payment_status = 'released'
+        order.handoff_code = ''
         order.save(update_fields=[
             'collected_at', 'collected_via', 'prep_stage', 'prep_at',
             'settlement_status', 'settlement_released_at', 'settlement_net',
-            'payment_status',
+            'payment_status', 'handoff_code',
         ])
         audit_action = 'collection_confirmed' if collected_via == 'student_confirmed' else 'handoff_code_verified'
         record_audit(actor_email, audit_action, 'order', order.id, {'collectedVia': collected_via})
@@ -1786,15 +1787,27 @@ def complete_by_code_view(request, pk):
         if order.payment_status not in ['paid', 'released']:
             return Response({'message': 'This order was never paid for'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if order.collected_at:
+            return Response(OrderSerializer(order, context={'request': request}).data)
+
+        if order.created_at and (dj_timezone.now() - order.created_at) > timedelta(days=14):
+            return Response(
+                {'message': 'This handover code has expired. Please contact support to resolve this order.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if not check_rate_limit(f"handoff_try_{order.id}", limit=5, window_seconds=600):
+            old_code = str(order.handoff_code or '').strip()
+            new_code = generate_6digit_code()
+            while new_code == old_code:
+                new_code = generate_6digit_code()
+            order.handoff_code = new_code
+            order.save(update_fields=['handoff_code'])
             return Response({'message': 'Too many failed handover code attempts. Please wait 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         code = str(request.data.get('code', '')).strip()
         if not code or not order.handoff_code or not secrets.compare_digest(code, str(order.handoff_code).strip()):
             return Response({'message': 'That code does not match this order'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if order.collected_at:
-            return Response(OrderSerializer(order, context={'request': request}).data)
 
         _release_escrow(order, 'handoff_code', request.user.email)
     return Response(OrderSerializer(order, context={'request': request}).data)

@@ -1249,3 +1249,124 @@ class PaginationAndAggregateTests(TestCase):
         self.assertGreaterEqual(a_ledger.data['activeVendorsCount'], 1)
         self.assertGreaterEqual(a_ledger.data['openDisputesCount'], 1)
         self.assertGreaterEqual(a_ledger.data['highPriorityDisputesCount'], 1)
+
+
+class PersistentRateLimitAndHandoffTests(TestCase):
+    """
+    FIN-06: Security-critical rate limits persist in DB across worker/cache resets,
+    ignore X-Forwarded-For header spoofing, rotate handoff codes on 429 lockout,
+    clear handoff codes upon collection (single-use), and expire codes after 14 days.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='rl.cust@st.knust.edu.gh', password='Password123',
+            verified=True, phone='+233240000201', hall='Unity',
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='rl.vendor@st.knust.edu.gh', password='Password123',
+            verified=True, is_vendor=True, role='vendor', account_type='vendor',
+            phone='+233240000202', hall='Repub',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v-rl-1', user=cls.vendor_user, name='RL Kitchen', hall='Repub', active=True, open=True,
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_rate_limit_persists_in_database_across_worker_memory_and_cache_flush(self):
+        from django.core.cache import cache
+        from api.security import check_rate_limit
+
+        for _ in range(3):
+            self.assertTrue(check_rate_limit('persist_test_key', limit=3, window_seconds=600))
+
+        # Simulate worker restart / in-memory dict + Django cache eviction
+        dict.clear(_RATE_LIMIT_CACHE)
+        cache.clear()
+        self.assertFalse(check_rate_limit('persist_test_key', limit=3, window_seconds=600))
+
+    def test_xff_and_header_spoofing_cannot_bypass_otp_login_reset_pay_or_handoff_lockout(self):
+        # Set active codes for verify-email, login-code, reset-password
+        now = timezone.now()
+        self.student.verification_code_hash = hash_token('111111')
+        self.student.verification_code_expires = now + timedelta(minutes=10)
+        self.student.login_code_hash = hash_token('222222')
+        self.student.login_code_expires = now + timedelta(minutes=10)
+        self.student.reset_code_hash = hash_token('333333')
+        self.student.reset_code_expires = now + timedelta(minutes=10)
+        self.student.save()
+
+        def spoof(i):
+            return {'HTTP_X_FORWARDED_FOR': f'198.51.100.{i}', 'HTTP_X_REAL_IP': f'203.0.113.{i}'}
+
+        # 1. Verify email OTP lockout despite XFF spoofing
+        for i in range(6):
+            r = self.client.post('/api/auth/verify-email/', {'email': self.student.email, 'code': '000000'}, format='json', **spoof(i))
+        self.assertEqual(r.status_code, 429)
+
+        # 2. Login code verify lockout despite XFF spoofing
+        for i in range(6):
+            r = self.client.post('/api/auth/login-code/verify/', {'email': self.student.email, 'code': '000000'}, format='json', **spoof(i + 20))
+        self.assertEqual(r.status_code, 429)
+
+        # 3. Password reset verify lockout despite XFF spoofing
+        for i in range(6):
+            r = self.client.post('/api/auth/reset-password/', {'email': self.student.email, 'code': '000000', 'newPassword': 'NewPassword123'}, format='json', **spoof(i + 40))
+        self.assertEqual(r.status_code, 429)
+
+        # 4. Payment initiation lockout despite XFF spoofing
+        order = Order.objects.create(
+            id='STW-RL-PAY', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='pending', handoff_code='445566',
+        )
+        self.client.force_authenticate(user=self.student)
+        for i in range(16):
+            r = self.client.post('/api/payments/initialize/', {'orderId': order.id}, format='json', **spoof(i + 60))
+        self.assertEqual(r.status_code, 429)
+
+    def test_handoff_code_rotates_on_lockout_clears_on_collection_and_expires_after_14_days(self):
+        order = Order.objects.create(
+            id='STW-RL-HC1', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('25.00'), fee=Decimal('1.25'), total=Decimal('26.25'),
+            payment_status='paid', prep_stage='ready', handoff_code='889900',
+        )
+        self.client.force_authenticate(user=self.vendor_user)
+
+        for i in range(5):
+            r = self.client.post(f'/api/orders/{order.id}/complete/', {'code': '000000'}, format='json', HTTP_X_FORWARDED_FOR=f'10.0.0.{i}')
+            self.assertEqual(r.status_code, 400)
+
+        r_lock = self.client.post(f'/api/orders/{order.id}/complete/', {'code': '889900'}, format='json', HTTP_X_FORWARDED_FOR='10.0.0.99')
+        self.assertEqual(r_lock.status_code, 429)
+
+        order.refresh_from_db()
+        self.assertNotEqual(order.handoff_code, '889900')
+        self.assertEqual(len(order.handoff_code), 6)
+
+        # Even if rate limit resets after window, old code no longer works; new rotated code succeeds & clears
+        _RATE_LIMIT_CACHE.clear()
+        r_old = self.client.post(f'/api/orders/{order.id}/complete/', {'code': '889900'}, format='json')
+        self.assertEqual(r_old.status_code, 400)
+
+        r_new = self.client.post(f'/api/orders/{order.id}/complete/', {'code': order.handoff_code}, format='json')
+        self.assertEqual(r_new.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.handoff_code, '')
+
+        # Order older than 14 days must reject handoff completion even with valid code
+        expired_order = Order.objects.create(
+            id='STW-RL-EXP', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('15.00'), fee=Decimal('0.75'), total=Decimal('15.75'),
+            payment_status='paid', prep_stage='ready', handoff_code='135790',
+        )
+        Order.objects.filter(id=expired_order.id).update(created_at=timezone.now() - timedelta(days=15))
+        r_exp = self.client.post(f'/api/orders/{expired_order.id}/complete/', {'code': '135790'}, format='json')
+        self.assertEqual(r_exp.status_code, 400)
