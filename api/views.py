@@ -8,7 +8,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import models, transaction
-from django.db.models import Exists, OuterRef
+from django.db.models import Avg, Count, Sum, Min, Max, Exists, OuterRef
 from django.utils import timezone as dj_timezone
 from django.utils.html import strip_tags
 from rest_framework import status
@@ -1281,21 +1281,22 @@ def payouts_ledger_view(request):
     if not user.is_admin:
         orders_query = orders_query.filter(vendor=vendor)
 
-    paid_orders = orders_query.filter(payment_status__in=['paid', 'released'])
-    released = [o for o in paid_orders if o.settlement_status == 'released']
-    held = [o for o in paid_orders if o.payment_status == 'paid' and o.settlement_status != 'released']
-
-    held_sum = sum(o.subtotal for o in held)
-    released_sum = sum(o.subtotal for o in released)
-    fees_sum = sum(o.fee for o in paid_orders)
+    paid_qs = orders_query.filter(payment_status__in=['paid', 'released'])
+    held_agg = paid_qs.filter(payment_status='paid').exclude(settlement_status='released').aggregate(
+        held_sum=Sum('subtotal'), held_count=Count('id')
+    )
+    released_agg = paid_qs.filter(settlement_status='released').aggregate(
+        released_sum=Sum('subtotal'), released_count=Count('id')
+    )
+    fees_agg = paid_qs.aggregate(fees_sum=Sum('fee'), total_collected=Sum('total'))
 
     return Response({
-        'held': round(held_sum, 2),
-        'released': round(released_sum, 2),
-        'heldCount': len(held),
-        'releasedCount': len(released),
-        'collected': round(sum(o.total for o in paid_orders), 2),
-        'fees': round(fees_sum, 2),
+        'held': round(held_agg['held_sum'] or 0, 2),
+        'released': round(released_agg['released_sum'] or 0, 2),
+        'heldCount': held_agg['held_count'] or 0,
+        'releasedCount': released_agg['released_count'] or 0,
+        'collected': round(fees_agg['total_collected'] or 0, 2),
+        'fees': round(fees_agg['fees_sum'] or 0, 2),
         'note': "STEW holds each payment until the student confirms collection, then releases it to you. You keep the full menu price; the 5% fee is added to the student's total."
     })
 
@@ -1573,11 +1574,12 @@ def _recompute_vendor_rating(vendor):
     """Recalculates vendor rating and review count from all non-hidden customer reviews."""
     if not vendor:
         return
-    active_reviews = Review.objects.filter(vendor=vendor).exclude(moderation_status='hidden')
-    count = active_reviews.count()
+    agg = Review.objects.filter(vendor=vendor).exclude(moderation_status='hidden').aggregate(
+        avg=Avg('rating'), count=Count('id')
+    )
+    count = agg['count'] or 0
     if count > 0:
-        avg_rating = sum(r.rating for r in active_reviews) / count
-        vendor.rating = round(avg_rating, 1)
+        vendor.rating = round(agg['avg'], 1)
         vendor.reviews = count
     else:
         vendor.rating = 0.0
@@ -1759,24 +1761,29 @@ def payout_batches_view(request):
         return Response({'message': 'Nothing to settle yet — no released orders waiting.'}, status=status.HTTP_400_BAD_REQUEST)
 
     batch_id = _unique_id(PayoutBatch, 'PAY')
-    total_amount = sum(o.subtotal for o in released_orders)
+    agg = released_orders.aggregate(
+        total_amount=Sum('subtotal'),
+        period_start=Min('collected_at'),
+        period_end=Max('collected_at'),
+        order_count=Count('id'),
+    )
     now = dj_timezone.now()
 
     with transaction.atomic():
         batch = PayoutBatch.objects.create(
             id=batch_id,
-            amount=round(total_amount, 2),
+            amount=round(agg['total_amount'] or 0, 2),
             currency='GHS',
             status='paid',
-            order_count=released_orders.count(),
-            period_start=min(o.collected_at or o.created_at for o in released_orders),
-            period_end=max(o.collected_at or o.created_at for o in released_orders),
+            order_count=agg['order_count'] or 0,
+            period_start=agg['period_start'] or now,
+            period_end=agg['period_end'] or now,
             provider='paystack',
             provider_reference=f"TRF-{secrets.token_hex(4).upper()}",
             paid_at=now
         )
         released_orders.update(payout_batch_id=batch.id)
-        record_audit(request.user.email, 'payout_batch_created', 'payout_batch', batch.id, {'amount': total_amount})
+        record_audit(request.user.email, 'payout_batch_created', 'payout_batch', batch.id, {'amount': batch.amount})
 
     return Response(PayoutBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
 
