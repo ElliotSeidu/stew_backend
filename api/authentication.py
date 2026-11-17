@@ -28,9 +28,9 @@ class JWTAuthentication(authentication.BaseAuthentication):
             raise AuthenticationFailed('Invalid token payload.')
 
         try:
-            user = User.objects.get(id=user_id, is_active=True)
+            user = User.objects.get(id=user_id, is_active=True, verified=True)
         except User.DoesNotExist:
-            raise AuthenticationFailed('User account not found or has been disabled.')
+            raise AuthenticationFailed('User account is not verified or has been disabled.')
 
         # Tokens issued before the latest password change/reset are revoked
         if not hmac.compare_digest(str(payload.get('pv', '')), password_fingerprint(user)):

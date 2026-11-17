@@ -74,6 +74,13 @@ def check_rate_limit(key: str, limit: int = 5, window_seconds: int = 60) -> bool
     PRODUCTION: Replace with Redis-backed cache for multi-worker safety.
     """
     now = time.time()
+    if len(_RATE_LIMIT_CACHE) > 5000:
+        stale_keys = [
+            k for k, ts in _RATE_LIMIT_CACHE.items()
+            if not ts or (now - ts[-1]) >= window_seconds
+        ]
+        for k in stale_keys:
+            _RATE_LIMIT_CACHE.pop(k, None)
     attempts = _RATE_LIMIT_CACHE.get(key, [])
     # Filter attempts within the sliding window
     attempts = [t for t in attempts if now - t < window_seconds]

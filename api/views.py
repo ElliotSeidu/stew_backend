@@ -230,6 +230,12 @@ def register_view(request):
             'message': 'An account with this email already exists.'
         }, status=status.HTTP_400_BAD_REQUEST)
 
+    if User.objects.filter(reference_id=reference_id, verified=True).exclude(email=email).exists():
+        return Response({
+            'errors': {'referenceId': 'This student reference ID is already registered.'},
+            'message': 'This student reference ID is already registered.'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
     # Generate 6-digit verification code
     code = generate_6digit_code()
     code_hash = hash_token(code)
@@ -305,9 +311,10 @@ def verify_email_view(request):
     except ValidationError as e:
         return Response({'message': str(e.detail.get('email', e.detail))}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Brute-force protection: max 5 attempts per 10 minutes per email
+    # Brute-force protection: max 5 attempts per 10 minutes per email; burn OTP on lockout
     if not check_rate_limit(f"verify_{email}", limit=5, window_seconds=600):
-        return Response({'message': 'Too many failed verification attempts. Please wait 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        User.objects.filter(email=email).update(verification_code_hash='', verification_code_expires=None)
+        return Response({'message': 'Too many failed verification attempts. Request a new code and wait 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     try:
         user = User.objects.get(email=email)
@@ -425,14 +432,14 @@ def request_login_code_view(request):
         return Response({'message': 'Too many code requests. Please wait a few minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     try:
-        user = User.objects.get(email=email)
+        user = User.objects.get(email=email, is_active=True, verified=True)
         code = generate_6digit_code()
         user.login_code_hash = hash_token(code)
         user.login_code_expires = dj_timezone.now() + timedelta(minutes=10)
         user.save(update_fields=['login_code_hash', 'login_code_expires'])
         _dispatch_otp_email(email, code, 'One-Time Login Code')
     except User.DoesNotExist:
-        # Never reveal account presence
+        # Never reveal account presence or bypass email verification
         pass
 
     return Response({'ok': True})
@@ -451,12 +458,16 @@ def login_with_code_view(request):
         return Response({'message': 'Only KNUST student emails (@st.knust.edu.gh) are permitted.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not check_rate_limit(f"login_code_try_{email}", limit=5, window_seconds=600):
-        return Response({'message': 'Too many failed attempts. Please wait 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        User.objects.filter(email=email).update(login_code_hash='', login_code_expires=None)
+        return Response({'message': 'Too many failed attempts. Request a new login code after waiting 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     try:
         user = User.objects.get(email=email)
     except User.DoesNotExist:
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not user.verified:
+        return Response({'code': 'unverified', 'message': 'Please verify your email first'}, status=status.HTTP_400_BAD_REQUEST)
 
     code_valid = False
     if user.login_code_hash and user.login_code_expires and dj_timezone.now() < user.login_code_expires:
@@ -468,9 +479,7 @@ def login_with_code_view(request):
     # Invalidate code — single-use enforcement
     user.login_code_hash = ''
     user.login_code_expires = None
-    if not user.verified:
-        user.verified = True
-    user.save(update_fields=['login_code_hash', 'login_code_expires', 'verified'])
+    user.save(update_fields=['login_code_hash', 'login_code_expires'])
 
     token = generate_jwt_token(user)
     serializer = UserSerializer(user)
@@ -520,7 +529,8 @@ def reset_password_view(request):
 
     ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
     if not check_rate_limit(f"reset_try_{email}", limit=5, window_seconds=600) or not check_rate_limit(f"reset_ip_{ip}", limit=15, window_seconds=600):
-        return Response({'message': 'Too many reset attempts. Please wait 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        User.objects.filter(email=email).update(reset_code_hash='', reset_code_expires=None)
+        return Response({'message': 'Too many reset attempts. Request a new code after waiting 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     if len(new_password) < 8 or not any(c.isalpha() for c in new_password) or not any(c.isdigit() for c in new_password):
         return Response({'errors': {'password': 'Password must be at least 8 characters and contain letters and numbers.'}}, status=status.HTTP_400_BAD_REQUEST)

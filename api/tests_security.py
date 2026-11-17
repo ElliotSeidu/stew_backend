@@ -4,12 +4,13 @@ Security regression tests for STEW API.
 Each test class demonstrates a vulnerability/loophole before remediation and
 stays as a regression guard after the fix.
 """
+from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from api.models import User, Vendor, Meal, Order, PayoutBatch, Review, SupportCase
-from api.security import generate_jwt_token, _RATE_LIMIT_CACHE
+from api.security import generate_jwt_token, hash_token, _RATE_LIMIT_CACHE
 
 
 class VendorGateSecurityTests(TestCase):
@@ -433,3 +434,107 @@ class OrderStateAndConcurrencySecurityTests(TestCase):
             'note': 'Second refund attempt',
         }, format='json')
         self.assertEqual(c3.status_code, 400)
+
+
+class AuthAndOtpSecurityTests(TestCase):
+    """
+    FINDING-04 & FINDING-05:
+      - Unverified users must be rejected by JWTAuthentication and login-code flow.
+      - OTP rate-limit lockout must burn stored OTP hashes so codes cannot be
+        brute-forced across successive 10-minute windows.
+      - Verified student reference IDs must be unique across registrations.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.verified_student = User.objects.create_user(
+            email='auth.ver@st.knust.edu.gh',
+            password='Password123',
+            full_name='Verified Auth Student',
+            reference_id='20882001',
+            phone='0248200001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+        )
+        cls.unverified_student = User.objects.create_user(
+            email='auth.unver@st.knust.edu.gh',
+            password='Password123',
+            full_name='Unverified Auth Student',
+            reference_id='20882002',
+            phone='0248200002',
+            hall='Queens Hall',
+            verified=False,
+        )
+        cls.unverified_token = generate_jwt_token(cls.unverified_student)
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_unverified_user_rejected_by_jwt_and_login_code_flow(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.unverified_token}')
+        me_res = self.client.get('/api/auth/me/')
+        self.assertEqual(me_res.status_code, 401)
+
+        # Unverified account must not receive or redeem a one-time login code
+        self.client.credentials()
+        req_res = self.client.post('/api/auth/login-code/request/', {'email': self.unverified_student.email}, format='json')
+        self.assertEqual(req_res.status_code, 200)
+        self.unverified_student.refresh_from_db()
+        self.assertEqual(self.unverified_student.login_code_hash, '')
+
+        # Even if a login code exists on an unverified user, login_with_code rejects with 'unverified'
+        User.objects.filter(pk=self.unverified_student.pk).update(
+            login_code_hash=hash_token('654321'),
+            login_code_expires=timezone.now() + timedelta(minutes=10),
+        )
+        ver_res = self.client.post(
+            '/api/auth/login-code/verify/',
+            {'email': self.unverified_student.email, 'code': '654321'},
+            format='json',
+        )
+        self.assertEqual(ver_res.status_code, 400)
+        self.unverified_student.refresh_from_db()
+        self.assertFalse(self.unverified_student.verified)
+
+    def test_otp_lockout_burns_code_hash(self):
+        # Reset password OTP must be cleared on lockout so clearing rate limit cannot still use the old code
+        User.objects.filter(pk=self.verified_student.pk).update(
+            reset_code_hash=hash_token('246810'),
+            reset_code_expires=timezone.now() + timedelta(minutes=15),
+        )
+        for _ in range(5):
+            r = self.client.post('/api/auth/reset-password/', {
+                'email': self.verified_student.email,
+                'code': '000000',
+                'password': 'NewPassword123',
+            }, format='json')
+            self.assertEqual(r.status_code, 400)
+
+        locked = self.client.post('/api/auth/reset-password/', {
+            'email': self.verified_student.email,
+            'code': '246810',
+            'password': 'NewPassword123',
+        }, format='json')
+        self.assertEqual(locked.status_code, 429)
+
+        # Even after the rate-limit window resets, the burned OTP must remain invalid
+        _RATE_LIMIT_CACHE.clear()
+        after_window = self.client.post('/api/auth/reset-password/', {
+            'email': self.verified_student.email,
+            'code': '246810',
+            'password': 'NewPassword123',
+        }, format='json')
+        self.assertEqual(after_window.status_code, 400)
+
+    def test_duplicate_verified_reference_id_rejected_on_register(self):
+        res = self.client.post('/api/auth/register/', {
+            'fullName': 'Clone Student',
+            'email': 'clone.ref@st.knust.edu.gh',
+            'referenceId': self.verified_student.reference_id,
+            'phone': '0248200099',
+            'accountType': 'customer',
+            'password': 'Password123',
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(User.objects.filter(email='clone.ref@st.knust.edu.gh').exists())
