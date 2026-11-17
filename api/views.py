@@ -554,38 +554,49 @@ def me_view(request):
         if new_email != user.email:
             return Response({'errors': {'email': 'Your KNUST email cannot be changed here. Contact support.'}}, status=status.HTTP_400_BAD_REQUEST)
 
+    changed_fields = []
     if 'fullName' in data:
         name = escape(str(data['fullName']).strip())[:150]
         if len(name) < 3:
             return Response({'errors': {'fullName': 'Enter your full name.'}}, status=status.HTTP_400_BAD_REQUEST)
         user.full_name = name
+        changed_fields.append('full_name')
     if 'area' in data or 'hall' in data:
         user.hall = escape(str(data.get('area') or data.get('hall') or '').strip())[:100]
+        changed_fields.append('hall')
     if 'phone' in data:
         user.phone = validate_ghana_phone(data['phone'])
+        changed_fields.append('phone')
     if 'kitchenName' in data:
         user.kitchen_name = escape(str(data['kitchenName']).strip())[:150]
+        changed_fields.append('kitchen_name')
     if 'sells' in data and isinstance(data['sells'], list):
         user.sells = [escape(str(s).strip())[:60] for s in data['sells'][:20] if str(s).strip()]
+        changed_fields.append('sells')
     if 'bio' in data:
         user.bio = escape(str(data['bio']).strip()[:500])
+        changed_fields.append('bio')
     if 'prep' in data:
         try:
             prep_val = int(data['prep'])
             if not (1 <= prep_val <= 240):
                 return Response({'errors': {'prep': 'Prep time must be between 1 and 240.'}}, status=status.HTTP_400_BAD_REQUEST)
             user.prep = prep_val
+            changed_fields.append('prep')
         except (ValueError, TypeError):
             return Response({'errors': {'prep': 'Prep time must be a number.'}}, status=status.HTTP_400_BAD_REQUEST)
     if 'payout' in data:
         user.payout = validate_ghana_phone(data['payout'])
+        changed_fields.append('payout')
     if 'logo' in data:
         try:
             user.logo = _sanitize_media_url(data.get('logo'), max_len=300000)
+            changed_fields.append('logo')
         except ValidationError as e:
             return Response({'errors': {'logo': str(e.detail[0] if isinstance(e.detail, list) else e.detail)}}, status=status.HTTP_400_BAD_REQUEST)
 
-    user.save()
+    if changed_fields:
+        user.save(update_fields=changed_fields)
 
     # Keep Vendor record synchronized when a vendor updates their kitchen profile
     if user.is_vendor or user.role == 'vendor' or user.account_type in ('vendor', 'both'):
