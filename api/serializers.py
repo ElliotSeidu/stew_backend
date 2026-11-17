@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from api.authentication import is_platform_admin
 from api.models import User, Vendor, Meal, Order, Review, Compliance, PayoutBatch, SupportCase, AuditEntry
 from api.validators import clean_knust_email, validate_ghana_phone, validate_student_ref_id
 
@@ -144,7 +145,7 @@ class OrderSerializer(serializers.ModelSerializer):
             return None
         request = self.context.get('request')
         if request and hasattr(request, 'user') and request.user.is_authenticated:
-            if obj.customer == request.user or obj.email == request.user.email or getattr(request.user, 'is_admin', False) or getattr(request.user, 'role', '') == 'admin':
+            if obj.customer == request.user or obj.email == request.user.email or is_platform_admin(request.user):
                 return obj.handoff_code
             return None
         # No authenticated request context: never leak the code

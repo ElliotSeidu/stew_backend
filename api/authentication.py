@@ -46,6 +46,11 @@ class JWTAuthentication(authentication.BaseAuthentication):
         return 'Bearer realm="api"'
 
 
+def is_platform_admin(user) -> bool:
+    """Single canonical check for STEW platform administrators."""
+    return bool(user and user.is_authenticated and user.is_admin)
+
+
 class IsStudentUser(permissions.BasePermission):
     """Allows access only to authenticated KNUST student users."""
     def has_permission(self, request, view):
@@ -57,12 +62,15 @@ class IsVendorUser(permissions.BasePermission):
     def has_permission(self, request, view):
         if not (request.user and request.user.is_authenticated):
             return False
-        return bool(request.user.is_vendor or request.user.is_admin or request.user.role in ['vendor', 'admin'] or request.user.account_type in ['vendor', 'both', 'admin'])
+        return bool(
+            request.user.is_vendor
+            or request.user.role == 'vendor'
+            or request.user.account_type in ['vendor', 'both']
+            or is_platform_admin(request.user)
+        )
 
 
 class IsAdminUser(permissions.BasePermission):
     """Allows access only to administrator users."""
     def has_permission(self, request, view):
-        if not (request.user and request.user.is_authenticated):
-            return False
-        return bool(request.user.is_admin or request.user.role == 'admin' or request.user.account_type == 'admin' or request.user.is_staff)
+        return is_platform_admin(request.user)

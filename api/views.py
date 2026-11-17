@@ -22,7 +22,7 @@ def escape(value) -> str:
     """Strips HTML tags and angle brackets while preserving normal punctuation (e.g. apostrophes) for JSON responses."""
     return strip_tags(str(value or '')).replace('<', '').replace('>', '')
 
-from api.authentication import JWTAuthentication, IsStudentUser, IsVendorUser, IsAdminUser
+from api.authentication import JWTAuthentication, IsStudentUser, IsVendorUser, IsAdminUser, is_platform_admin
 from api.models import (
     User, Vendor, Meal, Order, Review, Compliance,
     PayoutBatch, SupportCase, PushSubscription, AuditEntry, AnalyticsEvent
@@ -58,17 +58,6 @@ def record_audit(actor, action, entity_type, entity_id, extra=None):
         logger.error(f"Audit log failure: {e}")
 
 
-def _is_admin_user(user) -> bool:
-    return bool(
-        user and user.is_authenticated and (
-            getattr(user, 'is_admin', False)
-            or getattr(user, 'is_staff', False)
-            or getattr(user, 'role', '') == 'admin'
-            or getattr(user, 'account_type', '') == 'admin'
-        )
-    )
-
-
 def _is_order_owner(user, order) -> bool:
     return bool(user and user.is_authenticated and (order.customer == user or order.email == user.email))
 
@@ -78,11 +67,11 @@ def _is_order_vendor(user, order) -> bool:
 
 
 def _is_order_participant(user, order) -> bool:
-    return _is_order_owner(user, order) or _is_order_vendor(user, order) or _is_admin_user(user)
+    return _is_order_owner(user, order) or _is_order_vendor(user, order) or is_platform_admin(user)
 
 
 def _is_order_vendor_or_admin(user, order) -> bool:
-    return _is_order_vendor(user, order) or _is_admin_user(user)
+    return _is_order_vendor(user, order) or is_platform_admin(user)
 
 
 def _sanitize_media_url(raw_val, max_len: int = 300000) -> str:
@@ -624,7 +613,7 @@ def me_view(request):
 def delete_account_view(request):
     """Permanently deletes student or vendor account (admin cannot be deleted)."""
     user = request.user
-    if user.is_admin or user.role == 'admin' or user.email.lower().startswith('admin@'):
+    if is_platform_admin(user):
         return Response({'message': 'Admin accounts cannot be deleted.'}, status=status.HTTP_400_BAD_REQUEST)
 
     user_email = user.email
@@ -729,7 +718,7 @@ def meal_detail_view(request, pk):
         return Response({'message': 'Meal not found'}, status=status.HTTP_404_NOT_FOUND)
 
     # Permission check: must belong to user's vendor unless admin
-    if not request.user.is_admin and meal.vendor.user != request.user:
+    if not is_platform_admin(request.user) and meal.vendor.user != request.user:
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'DELETE':
@@ -788,7 +777,7 @@ def vendor_apply_view(request):
         user.hall = hall
         user.sells = sells
         user.is_vendor = True
-        user.role = 'vendor' if user.role != 'admin' else 'admin'
+        user.role = 'vendor' if not is_platform_admin(user) else user.role
         user.account_type = 'both' if user.account_type == 'customer' else user.account_type
         if 'payout' in data:
             user.payout = validate_ghana_phone(data['payout'])
@@ -839,7 +828,7 @@ def vendor_activate_view(request):
     """Marks user as an active vendor."""
     user = request.user
     user.is_vendor = True
-    if user.role != 'admin':
+    if not is_platform_admin(user):
         user.role = 'vendor'
     if user.account_type == 'customer':
         user.account_type = 'both'
@@ -860,7 +849,7 @@ def orders_view(request):
 
     if request.method == 'GET':
         scope = request.query_params.get('scope', '').strip().lower()
-        if user.is_admin or user.role == 'admin':
+        if is_platform_admin(user):
             orders = Order.objects.select_related('vendor', 'customer').all().order_by('-created_at')
         elif scope == 'vendor' and (user.is_vendor or user.role in ['vendor', 'both']):
             orders = Order.objects.select_related('vendor', 'customer').filter(vendor__user=user).order_by('-created_at')
@@ -1006,7 +995,7 @@ def order_detail_view(request, pk):
     user = request.user
     is_owner = (order.customer == user or order.email == user.email)
     is_order_vendor = (order.vendor and order.vendor.user == user)
-    if not (is_owner or is_order_vendor or user.is_admin or user.role == 'admin'):
+    if not (is_owner or is_order_vendor or is_platform_admin(user)):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     return Response(OrderSerializer(order, context={'request': request}).data)
@@ -1028,7 +1017,7 @@ def cancel_order_view(request, pk):
     user = request.user
     is_owner = (order.customer == user or order.email == user.email)
     is_order_vendor = (order.vendor and order.vendor.user == user)
-    if not (is_owner or is_order_vendor or user.is_admin):
+    if not (is_owner or is_order_vendor or is_platform_admin(user)):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     if order.cancelled_at:
@@ -1037,7 +1026,7 @@ def cancel_order_view(request, pk):
         return Response({'message': 'This order was already handed over and cannot be cancelled. Open a support case instead.'}, status=status.HTTP_400_BAD_REQUEST)
 
     # If student, enforce time window and prep stage
-    if is_owner and not (user.is_admin or is_order_vendor):
+    if is_owner and not (is_platform_admin(user) or is_order_vendor):
         if order.prep_stage != 'accepted':
             return Response({'message': 'The kitchen has already started on this order.'}, status=status.HTTP_400_BAD_REQUEST)
         elapsed_seconds = (dj_timezone.now() - order.created_at).total_seconds()
@@ -1082,7 +1071,7 @@ def init_payment_view(request):
         return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
     # IDOR defense: only the order's customer or an admin can initialize payment
-    if not (_is_order_owner(request.user, order) or _is_admin_user(request.user)):
+    if not (_is_order_owner(request.user, order) or is_platform_admin(request.user)):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     if order.cancelled_at:
@@ -1213,7 +1202,7 @@ def verify_payment_view(request):
 
     # IDOR: only the order owner may verify their own payment
     user = request.user
-    if not (_is_order_owner(user, order) or _is_admin_user(user)):
+    if not (_is_order_owner(user, order) or is_platform_admin(user)):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     if order.payment_status in ['paid', 'released']:
@@ -1285,11 +1274,11 @@ def payouts_ledger_view(request):
     """
     user = request.user
     vendor = Vendor.objects.filter(user=user).first()
-    if not vendor and not user.is_admin:
+    if not vendor and not is_platform_admin(user):
         return Response({'held': 0, 'released': 0, 'heldCount': 0, 'releasedCount': 0, 'collected': 0, 'fees': 0})
 
     orders_query = Order.objects.filter(cancelled_at__isnull=True)
-    if not user.is_admin:
+    if not is_platform_admin(user):
         orders_query = orders_query.filter(vendor=vendor)
 
     paid_qs = orders_query.filter(payment_status__in=['paid', 'released'])
@@ -1501,7 +1490,7 @@ def mark_collected_view(request, pk):
 
     # IDOR protection: only the order's customer (or admin) may confirm collection
     _collector = request.user
-    if order.customer != _collector and order.email != _collector.email and not _collector.is_admin:
+    if order.customer != _collector and order.email != _collector.email and not is_platform_admin(_collector):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
     if order.cancelled_at:
@@ -1601,7 +1590,7 @@ def vendor_reviews_view(request, vendorId):
     if wants_hidden:
         try:
             auth_res = JWTAuthentication().authenticate(request)
-            if auth_res and _is_admin_user(auth_res[0]):
+            if auth_res and is_platform_admin(auth_res[0]):
                 allow_hidden = True
         except Exception:
             allow_hidden = False
@@ -1804,7 +1793,7 @@ def support_cases_view(request):
     """Customer or Admin support tickets."""
     user = request.user
     if request.method == 'GET':
-        if user.is_admin:
+        if is_platform_admin(user):
             cases = SupportCase.objects.all().order_by('-created_at')
         else:
             cases = SupportCase.objects.filter(user=user).order_by('-created_at')
@@ -1926,7 +1915,7 @@ def admin_user_detail_view(request, pk):
     except User.DoesNotExist:
         return Response({'message': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-    if target.is_admin or target.role == 'admin':
+    if is_platform_admin(target):
         return Response({'message': 'Admin accounts cannot be suspended from the dashboard.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if 'active' in request.data:
