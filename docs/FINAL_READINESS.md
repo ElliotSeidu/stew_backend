@@ -2,8 +2,8 @@
 
 **System:** STEW — Campus Food Marketplace (Django REST Framework API + React/Vite PWA, KNUST / GHS)  
 **Repositories & Branches Reviewed:**
-- Backend (`stew_backend`): branch `security/final` (from `security/pre-launch` `4fcfb4b`)
-- Frontend (`stew`): branch `security/final` (from `security/pre-launch` `c578c54`)
+- Backend (`stew_backend`): branch `security/release` (branched from `security/final` `c22b900`, after `security/pre-launch` `4fcfb4b`)
+- Frontend (`stew`): branch `security/final` `5068e6d` (from `security/pre-launch` `c578c54`; no frontend changes required in `security/release`)
 
 > **Scope Statement:** Security reviews and automated test suites reduce defect risk under modeled conditions; they do not establish that software is "secure" against all unknown bugs, operational misconfigurations, or third-party service failures. Every verdict below reflects code, configurations, and local test/database runs directly observed in `stew_backend` and `stew`.
 
@@ -37,24 +37,42 @@ The prior `docs/SECURITY_REVIEW.md` (`4fcfb4b`) accurately summarized 9 remediat
 | `ACC-01` | Low | Canonical admin model: `is_platform_admin(user) == user.is_admin`; vendor user without `Vendor` profile receives zeroed `200` on `GET /api/payouts/` | `api/authentication.py:51`, `api/views.py:1537` | `AdminUnificationMatrixTest.test_matrix_19_payouts_ledger` | `accepted` | Pre-decided |
 | `ACC-02` | Low | JWT access token persisted in browser `localStorage` (`stew.token`) with server revocation on logout and strict XSS hygiene | `stew/src/context/Providers.jsx:96`, `stew/src/lib/api.js` | Code grep (0 `dangerouslySetInnerHTML`/`javascript:`/`eval`) + `AuthAndEmailBypassTests` | `accepted` | `a6f2e67`, `5068e6d` |
 
+### Findings Table (`security/release` — Independent Payment/Auth Pass)
+
+Independent review leads recorded in `docs/OPUS_PAYMENT_REVIEW.md` (`b29c0f1`) were verified against the live codebase and PostgreSQL 16 concurrency runs, producing 7 release commits (`REL-01`–`REL-07`):
+
+| ID | Severity | Title | Location | Exploit / Regression Test | Status | Commit |
+|---|---|---|---|---|---|---|
+| `REL-01` | High | Paid-after-cancel money orphaning on webhook/verify after cancellation | `api/views.py` (`_mark_order_paid`, `verify_payment_view`, `paystack_webhook_view`, `init_payment_view`) | `PaidAfterCancelOrphanPreventionTests` (`test_cancel_then_webhook_and_duplicate_webhook_are_recorded_and_idempotent`, `test_cancel_then_verify_returns_error_and_marks_refund_pending`, `test_init_payment_refuses_cancelled_and_refund_states`) + PG `STW-PG-RACE4`/`STW-PG-RACE5` | `fixed` | `29bb8ba` (BE) |
+| `REL-02` | High | IP-keyed rate limits vulnerable to campus NAT lockout & untrusted `X-Forwarded-For` proxy hops | `stew_server/settings.py` (`TRUSTED_PROXY_COUNT`, `NUM_PROXIES`, `anon: 300/min`), `api/security.py` (`get_client_ip`), `api/views.py`, `.env.example`, `docs/PRODUCTION_PREFLIGHT.md` | `ProxyClientIpAndCampusNatRateLimitTests` (`test_get_client_ip_respects_trusted_proxy_count_right_to_left`, `test_campus_nat_many_distinct_emails_not_blocked_while_single_email_otp_still_locks`) | `fixed` | `6083cf7` (BE) |
+| `REL-03` | Medium | Unbounded `RateLimitBucket` table growth, unbounded key truncation collision risk, and `is_jwt_revoked(token)` payload decode asymmetry | `api/management/commands/cleanup_rate_limits.py`, `api/security.py` (`_revoked_jwt_key`, `_normalize_rate_limit_key`, `is_jwt_revoked`), `docs/PRODUCTION_PREFLIGHT.md` | `RateLimitBucketCleanupAndScaleTests` (`test_cleanup_rate_limits_removes_stale_keeps_fresh_and_bounds_keys`, `test_100k_rows_is_jwt_revoked_lookup_and_batched_cleanup_performance`) | `fixed` | `d40b8f3` (BE) |
+| `REL-04` | Medium | Missing transaction & `select_for_update()` row lock in `set_prep_stage_view` allowing concurrent `prep_at`/cancel lost updates | `api/views.py` (`set_prep_stage_view`) | `test_set_prep_stage_allows_intentional_step_back_and_blocks_cancelled` + PG threaded `STW-PG-RACE6`/`STW-PG-RACE7` in `PostgresLockingAndConcurrencyTests` | `fixed` | `ffb4a8e` (BE) |
+| `REL-05` | Low-Medium | Missing defense-in-depth payment/state guards at `_release_escrow` entry & lock | `api/views.py` (`EscrowReleaseError`, `_validate_escrow_releasable`, `_release_escrow`, `mark_collected_view`, `complete_by_code_view`) | `EscrowReleaseGuardTests` (`test_release_escrow_direct_calls_raise_on_pending_cancelled_and_released`, `test_collected_and_complete_endpoints_return_400_on_pending_cancelled_and_released`) | `fixed` | `e1f9705` (BE) |
+| `REL-06` | Medium | `support_case_resolve_view` deleted `SupportCase` rows with only minimal audit fields | `api/views.py` (`support_case_resolve_view`) | `SupportCaseAuditSnapshotTests` (`test_refund_and_dismiss_write_full_snapshot_audit_before_delete_and_block_double_resolve`) + `SupportCaseRefundBugTest` | `fixed` | `d548815` (BE) |
+| `REL-07` | Low | Missing JWT `iss='stew'` validation, 24h access lifetime default, and float round-trip in `orders_view` subtotal accumulation | `stew_server/settings.py`, `.env.example`, `api/security.py` (`generate_jwt_token`, `decode_jwt_token`), `api/views.py` (`orders_view`, intentional comments) | `JwtIssuerAndDecimalSubtotalTests` (`test_jwt_requires_iss_stew_and_defaults_to_12h_lifetime`, `test_order_creation_uses_exact_decimal_subtotal_and_preserves_numeric_line_price`) | `fixed` | `619b2c7` (BE) |
+
+#### Verified Disagreements & Implementation Findings
+- **Disagreement with Opus `M-01` (`orders_view` JSON line price shape):** Converting stored `Order.lines[].price` from numeric float to string would change the JSON API response shape relied on by frontend components. Instead, `orders_view` now accumulates `subtotal_acc += line_price * Decimal(qty)` directly in `Decimal` while preserving numeric `float(line_price)` in the stored JSON line snapshot (`619b2c7`).
+- **Symmetry bug found during `REL-03` pre-fix testing:** `revoke_jwt_token(token)` decoded `payload` to extract `jti` (`jwt_revoked_{jti}`), whereas `is_jwt_revoked(token)` with `payload=None` previously hashed the raw token string instead of decoding `jti`. Fixed in `d40b8f3` so both decode `payload` identically when `payload` is omitted.
+
 ---
 
 ## 2. Tool & Database Rehearsal Results (Before vs. After)
 
-| Tool / Check | Before (`security/pre-launch` baseline) | After (`security/final` verified) | Notes / Action |
+| Tool / Check | Before (`security/pre-launch` baseline) | Latest Verified (`security/release` `619b2c7` / `stew` `5068e6d`) | Notes / Action |
 |---|---|---|---|
-| `bandit -r api stew_server` (excl. `tests*.py`) | 1 Low (`B105` false positive at `views.py:554`), 0 Medium, 0 High | **0 High, 0 Medium, 3 Low** across `3711` LOC (`B110` on `api/security.py:18,23` test-clear compat helper; `B105` false positive on `api/views.py:646` password validation error string) | Acceptable; no Medium/High findings |
-| `pip_audit -r requirements.txt` | `1` vuln: `certifi 2026.7.22` (`PYSEC-2026-4320`, fix `2026.10.23`) | **`No known vulnerabilities found`** (`exit 0`) | Upgraded `certifi==2026.10.23`; pinned `psycopg[binary]==3.3.9` |
-| `ruff check api stew_server` | `81` errors (`0` `--select S` on prod code) | `85` style/lint rules (`RUF012`, `I001`, `BLE001`, etc.); non-test `--select S` (`--exclude "tests*.py"`): `2` findings (`S110` `try/except/pass` at `api/security.py:18,23`) | Non-blocking style rules left intact to minimize diff churn outside security scope |
-| `npm audit` (full) | `6` vulnerabilities (`1` low, `5` moderate in dev build deps) | `6` vulnerabilities (`1` low, `5` moderate: `fast-uri`, `glob`, `minimatch`, `serialize-javascript` inside `vite-plugin-pwa`/`workbox-build`) | Not auto-fixed because `npm audit fix --force` downgrades `vite-plugin-pwa` to breaking `1.1.0`; track Vite PWA upstream |
-| `npm audit --omit=dev` | `found 0 vulnerabilities` | **`found 0 vulnerabilities`** (`exit 0`) | Runtime bundle has zero known npm advisories |
-| `gitleaks git -v` (full git history) | `stew`: `0` leaks; `stew_backend`: `1` false positive | **`stew` (20 commits): `no leaks found`**; **`stew_backend` (35 commits, ~497.51 KB): `1` false positive** (`0002_alter_vendor_rating` string in `api/migrations/0003_decimal_money_and_constraints.py:56`, commit `e29849dc`) | `0` real secrets/tokens found in history (no secret rotation triggered by history scan, though rotate all prod secrets before launch as SOP) |
-| `manage.py check --deploy --fail-level WARNING` (prod env vars) | `0 issues` (0 silenced) | **`System check identified no issues (0 silenced).`** (`exit 0`) | Tested with `DEBUG=False`, 64-char `SECRET_KEY`, `PAYSTACK_ALLOW_MOCK=False`, SMTP backend, HTTPS host/origins |
-| Frontend `npm run lint` (`oxlint`) | `0` errors, pre-existing warnings (`hooks.js` tripped 1 error briefly in `0cf06a0`) | **`0 errors, 11 warnings`** across `36` files (`126ms`) | Clean |
-| Frontend `npm run build` (`vite build`) | Built with `VITE_API_URL` unset allowed | With `VITE_API_URL='https://api.stew.knust.edu.gh/api'`: **built in `1.63s`** + PWA SW (`dist/assets/index-*.js` `402.74 kB`, `sourcemap: false`); with `VITE_API_URL=""`: **exits `1`** (`[STEW BUILD ERROR]`) | Hard build-time gate verified |
-| Backend SQLite suite (`manage.py test api --noinput`) | `92 tests OK` | **`Ran 122 tests in 72.692s OK (skipped=1)`** | Only the PostgreSQL-only concurrency test is skipped on SQLite |
-| PostgreSQL 16 suite (`manage.py test api --noinput`) | `92` tests run: **FAILED (`errors=25`)** (`NotSupportedError` nullable outer join + `FOR UPDATE`) | **`Ran 122 tests in 89.160s OK`** (`0` errors, `0` failures, `0` skipped, incl. 3-thread PG concurrency races) | Rehearsed on WSL2 PostgreSQL 16 (`127.0.0.1:5432`) |
-| PostgreSQL messy `0003` migration rehearsal | `0002 -> messy seed -> 0003` **FAILED** (`NaN` + `varchar(128)` truncation) | **`0002 -> messy seed -> 0003 -> 0002 -> 0003` succeeded**; `m-round=10.01`, `m-nan=0.50`, `m-huge=99999999.99`, deduped `payment_reference` <= `128` chars | Reversible (`migrate api 0002` cleanly reverted schema) |
+| `bandit -r api stew_server` (excl. `migrations` & `tests*.py`) | 1 Low (`B105` false positive at `views.py:554`), 0 Medium, 0 High | **0 High, 0 Medium, 3 Low** across `3499` LOC (`B110` on `api/security.py:49,54` test-clear compat helper; `B105` false positive on `api/views.py:649` password validation message) | Re-verified on `security/release`; no Medium/High findings |
+| `pip_audit -r requirements.txt` | `1` vuln: `certifi 2026.7.22` (`PYSEC-2026-4320`, fix `2026.10.23`) | **`No known vulnerabilities found`** (`exit 0`) | Re-verified on `security/release`; `certifi==2026.10.23`, `psycopg[binary]==3.3.9` |
+| `ruff check` (`api stew_server`) | `81` errors (`0` `--select S` on prod code) | Full rule set: `96` errors (style/lint e.g. `RUF012`, `I001`, `BLE001`); non-test `--select S` (`--exclude "tests*.py,migrations/*"`): **`2` findings** (`S110` `try/except/pass` at `api/security.py:49,54`) | Re-verified on `security/release`; style rules outside security scope left intact |
+| `npm audit` (full) | `6` vulnerabilities (`1` low, `5` moderate in dev build deps) | From `security/final` (`5068e6d`, FE untouched): `6` vulnerabilities (`1` low, `5` moderate: `fast-uri`, `glob`, `minimatch`, `serialize-javascript` inside `vite-plugin-pwa`/`workbox-build`) | Not auto-fixed (`--force` downgrades `vite-plugin-pwa`); `stew` unchanged since `5068e6d` |
+| `npm audit --omit=dev` | `found 0 vulnerabilities` | From `security/final` (`5068e6d`, FE untouched): **`found 0 vulnerabilities`** (`exit 0`) | Runtime bundle deps unchanged since `5068e6d` |
+| `gitleaks git -v` (full git history) | `stew`: `0` leaks; `stew_backend`: `1` false positive | From `security/final`: `stew` (`20` commits): `no leaks found`; `stew_backend` (`35` commits): `1` false positive (`api/migrations/0003`:`0002_alter_vendor_rating`) — *not re-run after `security/final` commits* | Rotate all production secrets before launch as SOP |
+| `manage.py check --deploy --fail-level WARNING` (prod env vars) | `0 issues` (0 silenced) | **`System check identified no issues (0 silenced).`** (`exit 0`) | Re-verified on `security/release` with `DEBUG=False`, 64-char `SECRET_KEY`, `PAYSTACK_ALLOW_MOCK=False`, SMTP backend, HTTPS origins |
+| Frontend `npm run lint` (`oxlint`) | `0` errors | **`0 errors, 11 warnings`** across `36` files (`451ms`) | Re-run after `619b2c7` (`stew` `5068e6d`) |
+| Frontend `npm run build` (`vite build`) | Built cleanly (`dist/sw.js`) | **`built in 6.57s`** (`dist/sw.js` PWA build `337ms`, `dist/assets/index-*.js` `402.74 kB`, `sourcemap: false`); missing `VITE_API_URL` still blocked since `0ea8e01` | Re-run after `619b2c7` (`stew` `5068e6d`) |
+| Backend SQLite suite (`manage.py test api --noinput`) | `92 tests OK` | **`Ran 135 tests in 232.908s OK (skipped=1)`** | Re-run after `619b2c7`; only the PG-only concurrency test is skipped on SQLite |
+| PostgreSQL 16 suite (`manage.py test api --noinput`) | `92` tests run: **FAILED (`errors=25`)** | **`Ran 135 tests in 229.057s OK`** (`0` errors, `0` failures, `0` skipped, incl. 7 threaded PG races) | Re-run after `619b2c7` on WSL2 PostgreSQL 16 (`127.0.0.1:5432`) |
+| PostgreSQL messy `0003` migration rehearsal | `0002 -> messy seed -> 0003` **FAILED** | From `security/final`: **`0002 -> messy seed -> 0003 -> 0002 -> 0003` succeeded**; `m-round=10.01`, `m-nan=0.50`, `m-huge=99999999.99`, deduped `payment_reference` <= `128` chars | Migration schema unchanged since `security/final` |
 
 ---
 
@@ -88,6 +106,10 @@ Every area in the security checklist was audited directly against the code:
   - Image uploads client-compressed (`stew/src/lib/upload.js`), constrained by `DATA_UPLOAD_MAX_MEMORY_SIZE = 2621440` (`stew_server/settings.py:217`), validated by `_sanitize_media_url` (`api/views.py:193-209`: blocks `image/svg+xml`, `//`, oversize payloads > `600000` chars).
 - **Settings, Headers & Operational Safety (`FIXED FIN-14`):**
   - Production guards forbid weak `SECRET_KEY`, `ALLOWED_HOSTS='*'`, console email backend, and `PAYSTACK_ALLOW_MOCK=True` when `DEBUG=False` (`stew_server/settings.py:16-44, 286-307`), `HSTS` (1y + subdomains + preload), `SSL_REDIRECT`, `HttpOnly` + `SameSite='Lax'` + `Secure` cookies (`settings.py:217-240`), `Content-Security-Policy` + `Permissions-Policy` middleware (`api/security.py:115-128`), `seed_data` production guard, and `/admin/` restricted to `is_admin` + `verified` (`stew_server/urls.py:1-21`).
+- **`security/release` Payment, Concurrency, Proxy & Support Hardening (`FIXED REL-01`–`REL-07`):**
+  - Paid-after-cancel webhooks and verify calls atomically record `paid_at`, set `payment_status='refund_pending'`, write `AuditEntry`, and return `400` (`code='refund_pending'`) from `verify_payment_view` (`REL-01`).
+  - Right-to-left `X-Forwarded-For` extraction governed by `TRUSTED_PROXY_COUNT` prevents campus NAT lockouts across distinct accounts (`REL-02`), alongside batched `cleanup_rate_limits` pruning and bounded bucket keys (`REL-03`).
+  - `set_prep_stage_view` acquires `select_for_update()` (`REL-04`), `_release_escrow` re-validates payment/terminal state inside its atomic lock (`REL-05`), `support_case_resolve_view` persists a full JSON snapshot into `AuditEntry` atomically before `case.delete()` (`REL-06`), and JWT decode enforces `iss='stew'` with a 12h default lifetime while `orders_view` accumulates `Decimal` subtotals directly (`REL-07`).
 
 ---
 
@@ -134,7 +156,8 @@ The following items cannot be verified from a local/WSL2 test environment and MU
      - `EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend` + `EMAIL_HOST`, `EMAIL_PORT=587`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS=True`, `DEFAULT_FROM_EMAIL`
      - `DB_ENGINE=postgresql`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT=5432`, `DB_SSLMODE=require`
      - `RATE_LIMIT_BACKEND=db` (default, safe multi-worker PostgreSQL locks) and optional `REDIS_URL=redis://...` for `CACHES` / DRF throttles
-     - `JWT_ACCESS_TOKEN_LIFETIME_HOURS=4` (recommended tighter lifetime; default `24`)
+     - `TRUSTED_PROXY_COUNT=0` (set to exact number of trusted reverse proxy hops — e.g. `1` behind a single nginx/Cloudflare hop — per `docs/PRODUCTION_PREFLIGHT.md` Section 7; never trust arbitrary client `X-Forwarded-For` prefixes)
+     - `JWT_ACCESS_TOKEN_LIFETIME_HOURS=12` (current default `12`; tighten to `1`–`4` once refresh token rotation is deployed)
      - Optional initial admin bootstrap only: `SEED_ADMIN_PASSWORD=<12+ char strong secret>`
 5. **Apply Database Migrations on Copy First, Then Production**
    - Run `python manage.py migrate --noinput` against the staging copy first (`0003_decimal_money_and_constraints`, `0004_ratelimitbucket`). Confirm exit `0` and `makemigrations --check --dry-run`.
@@ -156,6 +179,10 @@ The following items cannot be verified from a local/WSL2 test environment and MU
    - Deploy `dist/` over HTTPS cleanly. Verify `dist/` does not include source maps (`.map`) or mock shortcuts (`MOCK === false`).
 8. **Run Post-Deploy Smoke Tests**
    - Verify HTTPS redirect, TLS cert, `GET /api/vendors/` `200`, `POST /api/payments/initialize/` unauthenticated returns `401`, non-KNUST email signup returns `400`, `/admin/` rejects non-`is_admin` staff accounts, and run Section 6 dry-run on staging / live micro-order.
+9. **Schedule Daily Rate-Limit & Revocation Cleanup Cron**
+   - Configure a daily cron / systemd timer (see `docs/PRODUCTION_PREFLIGHT.md` Section 8):
+     `0 3 * * * cd /srv/stew/stew_backend && ./venv/bin/python manage.py cleanup_rate_limits`
+     to delete expired `RateLimitBucket` rows and expired JWT `jti` revocation entries in batches (`--batch-size 1000`).
 
 ---
 
@@ -230,9 +257,17 @@ curl -fsS -X POST "$API_BASE/support/cases/$CASE_CODE/resolve/" \
 
 ---
 
-## 7. Go / No-Go Verdict
+## 7. Deferred Items
+
+The following hardening enhancements were intentionally deferred beyond `security/release` and tracked for the next scheduled release window:
+1. **Soft-delete support cases (`status` + `resolved_at` columns instead of hard delete after `AuditEntry` snapshot)** — requires schema migration + admin/customer query filtering while `AuditEntry` already preserves the full immutable resolution snapshot (`REL-06`, `d548815`).
+2. **Refresh token rotation + shorter 1h access JWT** — requires coordinated backend refresh-token store/endpoint and frontend silent-refresh flow (`JWT_ACCESS_TOKEN_LIFETIME_HOURS` set to `12` in the interim, `REL-07`, `619b2c7`).
+
+---
+
+## 8. Go / No-Go Verdict
 
 **Verdict: `CONDITIONAL GO (NO-GO UNTIL PREFLIGHT & STAGING GATES PASS)`**
 
-- **Code & Automated Verification Gate (`PASSED`):** All identified defects (`FIN-01`–`FIN-14`) have regression tests proving pre-fix failure and post-fix resolution. The full 122-test suite passes with zero errors/skips on PostgreSQL 16 (`89.160s`), migration `0003` is verified forward and backward on messy data in PostgreSQL, production `npm audit --omit=dev` and Python `pip_audit` show zero known vulnerabilities, `gitleaks` shows zero real secrets in git history, `manage.py check --deploy` shows zero issues, and the frontend builds cleanly with strict `VITE_API_URL` enforcement and zero lint errors.
-- **Blocking Release Conditions Before Production Cutover:** Do **NOT** deploy to live traffic until an operator executes the `docs/PRODUCTION_PREFLIGHT.md` audit against a production snapshot copy, promotes legitimate admins to `is_admin=True`, sets live production credentials/env vars (`DEBUG=False`, `PAYSTACK_SECRET_KEY`, SMTP, PostgreSQL TLS, `VITE_API_URL`), tests backup restore + migrations on the copy first, locks down `/admin/` at the reverse proxy, and verifies Section 6 against staging with real Paystack test credentials.
+- **Code & Automated Verification Gate (`PASSED`):** All identified defects (`FIN-01`–`FIN-14` and `REL-01`–`REL-07`) have regression tests proving pre-fix failure and post-fix resolution. The full **135-test suite** passes with zero errors/skips on PostgreSQL 16 (`229.057s`) and `135` tests (`1` PostgreSQL-only concurrency test skipped, `232.908s`) on SQLite. Migration `0003` was verified forward and backward on messy data in PostgreSQL on `security/final`. Production Python `pip_audit` shows zero known vulnerabilities, `bandit` (`3499` LOC excl. tests/migrations) shows `0` High / `0` Medium findings, `manage.py check --deploy --fail-level WARNING` shows zero issues, and the untouched frontend (`5068e6d`) builds cleanly (`dist/sw.js` generated, `0` lint errors; missing `VITE_API_URL` build gate verified on `security/final`).
+- **Blocking Release Conditions Before Production Cutover:** Do **NOT** deploy to live traffic until an operator executes the `docs/PRODUCTION_PREFLIGHT.md` audit against a production snapshot copy, promotes legitimate admins to `is_admin=True`, sets live production credentials/env vars (`DEBUG=False`, `PAYSTACK_SECRET_KEY`, `TRUSTED_PROXY_COUNT`, `JWT_ACCESS_TOKEN_LIFETIME_HOURS=12`, SMTP, PostgreSQL TLS, `VITE_API_URL`), schedules the daily `cleanup_rate_limits` cron job, tests backup restore + migrations on the copy first, locks down `/admin/` at the reverse proxy, and verifies Section 6 against staging with real Paystack test credentials.
