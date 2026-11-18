@@ -2544,3 +2544,94 @@ class RateLimitBucketCleanupAndScaleTests(TestCase):
         call_command('cleanup_rate_limits', batch_size=10_000, margin_seconds=3600)
         self.assertEqual(RateLimitBucket.objects.filter(key__startswith='perf_rl_').count(), 0)
         self.assertTrue(is_jwt_revoked(revoked_tok))
+
+
+class EscrowReleaseGuardTests(TestCase):
+    """
+    REL-05: _release_escrow must refuse unpaid, cancelled, and already-released
+    orders directly by raising EscrowReleaseError (ValidationError subclass -> 400),
+    and both /collected/ and /complete/ endpoints must return 400 (never 500 or 200).
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='escg.student@st.knust.edu.gh', password='Password123',
+            full_name='Escrow Guard Student', reference_id='20894001', phone='0249400001',
+            hall='Unity Hall', verified=True,
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='escg.vendor@st.knust.edu.gh', password='Password123',
+            full_name='Escrow Guard Vendor', reference_id='20894002', phone='0249400002',
+            hall='Unity Hall', verified=True, is_vendor=True, role='vendor', account_type='vendor',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_escg1', user=cls.vendor_user, name='Escrow Guard Kitchen',
+            hall='Unity Hall', open=True, active=True,
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def _make_orders(self, prefix):
+        now = timezone.now()
+        o_pending = Order.objects.create(
+            id=f'{prefix}-PEND', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='pending', settlement_status='pending',
+            prep_stage='ready', handoff_code='112233',
+        )
+        o_cancelled = Order.objects.create(
+            id=f'{prefix}-CANC', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='cancelled', settlement_status='pending',
+            cancelled_at=now, prep_stage='ready', handoff_code='112233',
+        )
+        o_released = Order.objects.create(
+            id=f'{prefix}-RELS', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='released', settlement_status='released',
+            paid_at=now, collected_at=now, collected_via='student_confirmed',
+            settlement_released_at=now, settlement_net=Decimal('20.00'),
+            prep_stage='collected', handoff_code='112233',
+        )
+        return o_pending, o_cancelled, o_released
+
+    def test_release_escrow_direct_calls_raise_on_pending_cancelled_and_released(self):
+        from api.views import EscrowReleaseError, _release_escrow
+
+        for o in self._make_orders('STW-DIR'):
+            orig_status = o.payment_status
+            orig_settlement = o.settlement_status
+            orig_collected_via = o.collected_via
+            with self.assertRaises(EscrowReleaseError, msg=f'Expected EscrowReleaseError on {o.id}'):
+                _release_escrow(o, 'handoff_code', self.vendor_user.email)
+            o.refresh_from_db()
+            self.assertEqual(o.payment_status, orig_status)
+            self.assertEqual(o.settlement_status, orig_settlement)
+            self.assertEqual(o.collected_via, orig_collected_via)
+
+    def test_collected_and_complete_endpoints_return_400_on_pending_cancelled_and_released(self):
+        o_pend, o_canc, o_rels = self._make_orders('STW-EP')
+
+        for o in (o_pend, o_canc, o_rels):
+            self.client.force_authenticate(user=self.student)
+            r_col = self.client.post(f'/api/orders/{o.id}/collected/', {}, format='json')
+            self.assertEqual(r_col.status_code, 400, f'/collected/ on {o.id} gave {r_col.status_code}')
+
+            self.client.force_authenticate(user=self.vendor_user)
+            r_cmp = self.client.post(f'/api/orders/{o.id}/complete/', {'code': '112233'}, format='json')
+            self.assertEqual(r_cmp.status_code, 400, f'/complete/ on {o.id} gave {r_cmp.status_code}')
+
+        o_pend.refresh_from_db()
+        o_canc.refresh_from_db()
+        o_rels.refresh_from_db()
+        self.assertEqual(o_pend.payment_status, 'pending')
+        self.assertIsNone(o_pend.collected_at)
+        self.assertEqual(o_canc.payment_status, 'cancelled')
+        self.assertIsNone(o_canc.collected_at)
+        self.assertEqual(o_rels.collected_via, 'student_confirmed')

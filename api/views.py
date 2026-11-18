@@ -1652,33 +1652,59 @@ def payouts_ledger_view(request):
 # MEETUP & HANDOVER ESCROW CONFIRMATION
 # ============================================================================
 
+class EscrowReleaseError(ValidationError):
+    """Raised when escrow release is attempted on an unpaid, cancelled, or already-released order."""
+
+
+def _validate_escrow_releasable(order_obj) -> None:
+    if order_obj.cancelled_at or order_obj.payment_status == 'cancelled':
+        raise EscrowReleaseError('This order was cancelled.')
+    if order_obj.collected_at or order_obj.payment_status == 'released' or order_obj.settlement_status == 'released':
+        raise EscrowReleaseError('Escrow for this order has already been released.')
+    if order_obj.payment_status != 'paid':
+        raise EscrowReleaseError('This order was never paid for.')
+
+
 def _release_escrow(order, collected_via: str, actor_email: str) -> None:
     """Marks an order as collected and releases its escrow payment to the vendor.
 
-    Called by both student-confirmation and handoff-code paths. Idempotent if
-    ``order.collected_at`` is already set (callers check before calling).
+    Raises EscrowReleaseError (ValidationError -> HTTP 400) if the order is
+    not in an unreleased, non-cancelled 'paid' state.
     """
+    _validate_escrow_releasable(order)
     now = dj_timezone.now()
     now_ms = int(now.timestamp() * 1000)
-    prep_at = order.prep_at or {}
-    prep_at['collected'] = now_ms
     with transaction.atomic():
-        order.collected_at = now
-        order.collected_via = collected_via
-        order.prep_stage = 'collected'
-        order.prep_at = prep_at
-        order.settlement_status = 'released'
-        order.settlement_released_at = now
-        order.settlement_net = order.subtotal
-        order.payment_status = 'released'
-        order.handoff_code = ''
-        order.save(update_fields=[
+        locked = Order.objects.select_for_update().get(pk=order.pk)
+        _validate_escrow_releasable(locked)
+        prep_at = dict(locked.prep_at or {})
+        prep_at['collected'] = now_ms
+        locked.collected_at = now
+        locked.collected_via = collected_via
+        locked.prep_stage = 'collected'
+        locked.prep_at = prep_at
+        locked.settlement_status = 'released'
+        locked.settlement_released_at = now
+        locked.settlement_net = locked.subtotal
+        locked.payment_status = 'released'
+        locked.handoff_code = ''
+        locked.save(update_fields=[
             'collected_at', 'collected_via', 'prep_stage', 'prep_at',
             'settlement_status', 'settlement_released_at', 'settlement_net',
             'payment_status', 'handoff_code',
         ])
+        # Keep caller's in-memory instance synchronized for serialization
+        order.collected_at = locked.collected_at
+        order.collected_via = locked.collected_via
+        order.prep_stage = locked.prep_stage
+        order.prep_at = locked.prep_at
+        order.settlement_status = locked.settlement_status
+        order.settlement_released_at = locked.settlement_released_at
+        order.settlement_net = locked.settlement_net
+        order.payment_status = locked.payment_status
+        order.handoff_code = locked.handoff_code
         audit_action = 'collection_confirmed' if collected_via == 'student_confirmed' else 'handoff_code_verified'
-        record_audit(actor_email, audit_action, 'order', order.id, {'collectedVia': collected_via})
+        record_audit(actor_email, audit_action, 'order', locked.id, {'collectedVia': collected_via})
 
 
 @api_view(['POST'])
@@ -1888,13 +1914,16 @@ def mark_collected_view(request, pk):
 
         if order.cancelled_at:
             return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
-        if order.payment_status not in ['paid', 'released']:
+        if order.collected_at or order.payment_status == 'released' or order.settlement_status == 'released':
+            return Response({'message': 'This order has already been collected and released.'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.payment_status != 'paid':
             return Response({'message': 'This order was never paid for'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if order.collected_at:
-            return Response(OrderSerializer(order, context={'request': request}).data)
-
-        _release_escrow(order, 'student_confirmed', _collector.email)
+        try:
+            _release_escrow(order, 'student_confirmed', _collector.email)
+        except EscrowReleaseError as exc:
+            msg = str(exc.detail[0] if isinstance(exc.detail, list) else exc.detail)
+            return Response({'message': msg}, status=status.HTTP_400_BAD_REQUEST)
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1922,11 +1951,11 @@ def complete_by_code_view(request, pk):
         if order.cancelled_at:
             return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if order.payment_status not in ['paid', 'released']:
-            return Response({'message': 'This order was never paid for'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.collected_at or order.payment_status == 'released' or order.settlement_status == 'released':
+            return Response({'message': 'This order has already been collected and released.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if order.collected_at:
-            return Response(OrderSerializer(order, context={'request': request}).data)
+        if order.payment_status != 'paid':
+            return Response({'message': 'This order was never paid for'}, status=status.HTTP_400_BAD_REQUEST)
 
         if order.created_at and (dj_timezone.now() - order.created_at) > timedelta(days=14):
             return Response(
@@ -1947,7 +1976,11 @@ def complete_by_code_view(request, pk):
         if not code or not order.handoff_code or not secrets.compare_digest(code, str(order.handoff_code).strip()):
             return Response({'message': 'That code does not match this order'}, status=status.HTTP_400_BAD_REQUEST)
 
-        _release_escrow(order, 'handoff_code', request.user.email)
+        try:
+            _release_escrow(order, 'handoff_code', request.user.email)
+        except EscrowReleaseError as exc:
+            msg = str(exc.detail[0] if isinstance(exc.detail, list) else exc.detail)
+            return Response({'message': msg}, status=status.HTTP_400_BAD_REQUEST)
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
