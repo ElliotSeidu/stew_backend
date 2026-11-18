@@ -500,6 +500,46 @@ class OrderStateAndConcurrencySecurityTests(TestCase):
         }, format='json')
         self.assertEqual(c3.status_code, 400)
 
+    def test_set_prep_stage_allows_intentional_step_back_and_blocks_cancelled(self):
+        order = Order.objects.create(
+            id='STW-PREP-BACK',
+            customer=self.student,
+            customer_name=self.student.full_name,
+            email=self.student.email,
+            phone=self.student.phone,
+            area='Campus',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'price': 30.0, 'qty': 1}],
+            subtotal=Decimal('30.00'),
+            fee=Decimal('1.50'),
+            total=Decimal('31.50'),
+            pickup_day='2026-11-20',
+            prep_stage='accepted',
+            prep_at={'accepted': 1700000000000},
+            payment_status='paid',
+            settlement_status='pending',
+        )
+        self.client.force_authenticate(user=self.vendor_user)
+        r1 = self.client.post(f'/api/orders/{order.id}/prep/', {'stage': 'shopping'}, format='json')
+        self.assertEqual(r1.status_code, 200)
+        r2 = self.client.post(f'/api/orders/{order.id}/prep/', {'stage': 'cooking'}, format='json')
+        self.assertEqual(r2.status_code, 200)
+        # Intentional: vendor can step back to correct an accidental tap
+        r3 = self.client.post(f'/api/orders/{order.id}/prep/', {'stage': 'shopping'}, format='json')
+        self.assertEqual(r3.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.prep_stage, 'shopping')
+        self.assertIn('accepted', order.prep_at)
+        self.assertIn('shopping', order.prep_at)
+        self.assertIn('cooking', order.prep_at)
+
+        # Cancelled order cannot change prep stage
+        order.cancelled_at = timezone.now()
+        order.save(update_fields=['cancelled_at'])
+        r4 = self.client.post(f'/api/orders/{order.id}/prep/', {'stage': 'ready'}, format='json')
+        self.assertEqual(r4.status_code, 400)
+
 
 class AuthAndOtpSecurityTests(TestCase):
     """
@@ -1265,6 +1305,55 @@ class PostgresLockingAndConcurrencyTests(TransactionTestCase):
         self.assertIsNotNone(bar_order.cancelled_at)
         self.assertIsNotNone(bar_order.paid_at)
         self.assertIn(bar_order.payment_status, ('refund_pending', 'refunded'))
+
+        # Race 6: Concurrent prep stage updates preserve all prep_at keys (no lost update)
+        prep_race_order = Order.objects.create(
+            id='STW-PG-RACE6', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='paid', prep_stage='accepted', prep_at={'accepted': 1700000000000},
+            lines=[{'mealId': self.meal_z.id, 'qty': 1}],
+        )
+
+        def _prep_stage(stage_val):
+            c = APIClient()
+            c.force_authenticate(user=self.vendor_user)
+            return c.post(f'/api/orders/{prep_race_order.id}/prep/', {'stage': stage_val}, format='json').status_code
+
+        race6_statuses = _race([lambda: _prep_stage('shopping'), lambda: _prep_stage('cooking')])
+        self.assertEqual(race6_statuses, [200, 200], race6_statuses)
+        prep_race_order.refresh_from_db()
+        self.assertIn('shopping', prep_race_order.prep_at)
+        self.assertIn('cooking', prep_race_order.prep_at)
+
+        # Race 7: Student cancel vs vendor set_prep_stage race
+        cp_order = Order.objects.create(
+            id='STW-PG-RACE7', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='paid', prep_stage='accepted', prep_at={'accepted': 1700000000000},
+            lines=[{'mealId': self.meal_z.id, 'qty': 1}],
+        )
+
+        def _cust_cancel_cp():
+            c = APIClient()
+            c.force_authenticate(user=self.student)
+            return ('cancel', c.post(f'/api/orders/{cp_order.id}/cancel/', {}, format='json').status_code)
+
+        def _vend_prep_cp():
+            c = APIClient()
+            c.force_authenticate(user=self.vendor_user)
+            return ('prep', c.post(f'/api/orders/{cp_order.id}/prep/', {'stage': 'cooking'}, format='json').status_code)
+
+        cp_results = dict(_race([_cust_cancel_cp, _vend_prep_cp]))
+        self.assertEqual(sorted(cp_results.values()), [200, 400], cp_results)
+        cp_order.refresh_from_db()
+        if cp_results['cancel'] == 200:
+            self.assertIsNotNone(cp_order.cancelled_at)
+            self.assertEqual(cp_order.prep_stage, 'accepted')
+        else:
+            self.assertIsNone(cp_order.cancelled_at)
+            self.assertEqual(cp_order.prep_stage, 'cooking')
 
 
 class PaginationAndAggregateTests(TestCase):

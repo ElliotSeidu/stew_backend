@@ -1829,38 +1829,40 @@ def send_order_message_view(request, pk):
 @permission_classes([IsVendorUser])
 def set_prep_stage_view(request, pk):
     """Chef updates preparation stage for batch cooking."""
-    try:
-        order = Order.objects.get(id=pk)
-    except Order.DoesNotExist:
-        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    if not _is_order_vendor_or_admin(request.user, order):
-        return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-    blocked = _inactive_vendor_response(request.user, order.vendor)
-    if blocked:
-        return blocked
-    terminal = _terminal_order_response(order)
-    if terminal:
-        return terminal
-    if order.payment_status not in ('paid', 'released'):
-        return Response(
-            {'message': 'Cannot advance preparation for an unpaid or refunded order.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
     stage = request.data.get('stage')
-    # Never allow 'collected' via set_prep_stage — collection requires student confirmation or handover code
+    # Never allow 'collected' via set_prep_stage — collection requires student confirmation or handover code.
+    # Stepping back to an earlier stage in valid_stages is intentional so chefs can correct mistakes; every tap is timestamped in prep_at.
     valid_stages = ['accepted', 'shopping', 'cooking', 'packing', 'ready']
     if stage not in valid_stages:
         return Response({'message': 'Invalid preparation stage'}, status=status.HTTP_400_BAD_REQUEST)
 
-    prep_at = order.prep_at or {}
-    now_ms = int(dj_timezone.now().timestamp() * 1000)
-    prep_at[stage] = now_ms
+    with transaction.atomic():
+        try:
+            order = Order.objects.select_for_update().get(id=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    order.prep_stage = stage
-    order.prep_at = prep_at
-    order.save(update_fields=['prep_stage', 'prep_at'])
+        if not _is_order_vendor_or_admin(request.user, order):
+            return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        blocked = _inactive_vendor_response(request.user, order.vendor)
+        if blocked:
+            return blocked
+        terminal = _terminal_order_response(order)
+        if terminal:
+            return terminal
+        if order.payment_status not in ('paid', 'released'):
+            return Response(
+                {'message': 'Cannot advance preparation for an unpaid or refunded order.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        prep_at = dict(order.prep_at or {})
+        now_ms = int(dj_timezone.now().timestamp() * 1000)
+        prep_at[stage] = now_ms
+
+        order.prep_stage = stage
+        order.prep_at = prep_at
+        order.save(update_fields=['prep_stage', 'prep_at'])
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
