@@ -2812,3 +2812,117 @@ class SupportCaseAuditSnapshotTests(_DjangoTestCase):
         self.assertEqual(res_bat.status_code, 409)
         self.assertTrue(SupportCase.objects.filter(code=batched_case.code).exists())
 
+
+class JwtIssuerAndDecimalSubtotalTests(_DjangoTestCase):
+    """WP7: Enforce JWT iss='stew' + 12h default lifetime, and direct Decimal subtotal accumulation."""
+
+    def test_jwt_requires_iss_stew_and_defaults_to_12h_lifetime(self):
+        from datetime import datetime, timezone
+        import jwt
+        from django.conf import settings
+        from django.test import override_settings
+        from api.models import User
+        from api.security import decode_jwt_token, generate_jwt_token, password_fingerprint
+
+        self.assertEqual(settings.JWT_ACCESS_TOKEN_LIFETIME_HOURS, 12)
+
+        user = User.objects.create_user(
+            email='wp7_jwt@st.knust.edu.gh',
+            password='Password123!',
+            role='student',
+            verified=True,
+        )
+
+        # Default token carries iss='stew' and 12h lifetime
+        tok = generate_jwt_token(user)
+        decoded = decode_jwt_token(tok)
+        self.assertEqual(decoded.get('iss'), 'stew')
+        self.assertEqual(decoded['exp'] - decoded['iat'], 12 * 3600)
+
+        # Setting override still honored dynamically
+        with override_settings(JWT_ACCESS_TOKEN_LIFETIME_HOURS=4):
+            tok4 = generate_jwt_token(user)
+            dec4 = decode_jwt_token(tok4)
+            self.assertEqual(dec4.get('iss'), 'stew')
+            self.assertEqual(dec4['exp'] - dec4['iat'], 4 * 3600)
+
+        # Tokens without iss or with wrong iss are rejected with 401
+        now = int(datetime.now(timezone.utc).timestamp())
+        base_payload = {
+            'sub': str(user.id),
+            'jti': 'wp7testjti0001',
+            'role': user.role,
+            'pv': password_fingerprint(user),
+            'iat': now,
+            'exp': now + 3600,
+        }
+        tok_no_iss = jwt.encode(base_payload, settings.SECRET_KEY, algorithm='HS256')
+        tok_wrong_iss = jwt.encode({**base_payload, 'iss': 'other-app'}, settings.SECRET_KEY, algorithm='HS256')
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {tok_no_iss}')
+        res_no = client.get('/api/auth/me/')
+        self.assertEqual(res_no.status_code, 401)
+
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {tok_wrong_iss}')
+        res_wrong = client.get('/api/auth/me/')
+        self.assertEqual(res_wrong.status_code, 401)
+
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {tok}')
+        res_ok = client.get('/api/auth/me/')
+        self.assertEqual(res_ok.status_code, 200)
+
+    def test_order_creation_uses_exact_decimal_subtotal_and_preserves_numeric_line_price(self):
+        from decimal import Decimal
+        from api.models import Meal, Order, User, Vendor
+        from api.security import generate_jwt_token
+
+        cust = User.objects.create_user(
+            email='wp7_cust@st.knust.edu.gh',
+            password='Password123!',
+            role='student',
+            verified=True,
+        )
+        v_user = User.objects.create_user(
+            email='wp7_vend@st.knust.edu.gh',
+            password='Password123!',
+            role='vendor',
+            verified=True,
+        )
+        vendor = Vendor.objects.create(
+            id='vend-wp7-1',
+            user=v_user,
+            name='WP7 Kitchen',
+            active=True,
+            open=True,
+        )
+        meal = Meal.objects.create(
+            id='meal-wp7-1',
+            vendor=vendor,
+            name='Special Fried Rice',
+            price=Decimal('7.77'),
+            left=20,
+            on=True,
+        )
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(cust)}')
+        res = client.post(
+            '/api/orders/',
+            {
+                'lines': [{'mealId': meal.id, 'qty': 3}],
+                'location': 'Republic Hall',
+                'phone': '0240000001',
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+
+        order = Order.objects.get(id=res.data['id'])
+        self.assertEqual(order.subtotal, Decimal('23.31'))
+        self.assertEqual(order.fee, Decimal('1.17'))
+        self.assertEqual(order.total, Decimal('24.48'))
+        self.assertEqual(res.data['lines'][0]['price'], 7.77)
+        self.assertIsInstance(res.data['lines'][0]['price'], float)
+
+

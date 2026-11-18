@@ -316,9 +316,10 @@ if not DEBUG and PAYSTACK_ALLOW_MOCK:
 
 # ---------------------------------------------------------------------------
 # JWT token lifetime (hours). Override with JWT_ACCESS_TOKEN_LIFETIME_HOURS env var.
-# Default: 24 hours. Use a shorter value (e.g. 1) + refresh tokens in production.
+# Default: 12 hours (compromise without refresh tokens). Use a shorter value (e.g. 1)
+# + refresh token rotation in a future release.
 # ---------------------------------------------------------------------------
-JWT_ACCESS_TOKEN_LIFETIME_HOURS = int(os.getenv('JWT_ACCESS_TOKEN_LIFETIME_HOURS', '24'))
+JWT_ACCESS_TOKEN_LIFETIME_HOURS = int(os.getenv('JWT_ACCESS_TOKEN_LIFETIME_HOURS', '12'))
 
 # ---------------------------------------------------------------------------
 # PRODUCTION NOTES:

@@ -432,7 +432,8 @@ def verify_email_view(request):
     user.verified = True
     user.verification_code_hash = ''
     user.verification_code_expires = None
-    # Bridge for frontend post-verification auto-login (Auth.jsx calls auth.loginWithCode immediately after auth.verify)
+    # Bridge for frontend post-verification auto-login (Auth.jsx calls auth.loginWithCode immediately after auth.verify).
+    # Intentional: single-use short-lived (2m) login_code_hash cleared immediately on redemption.
     user.login_code_hash = hash_token(code)
     user.login_code_expires = dj_timezone.now() + timedelta(minutes=2)
     user.save(update_fields=[
@@ -1099,6 +1100,7 @@ def orders_view(request):
 
     validated_lines = []
     requested_qty = {}
+    subtotal_acc = Decimal('0.00')
     line_vendor = None
     for idx, line in enumerate(raw_lines):
         if not isinstance(line, dict):
@@ -1123,9 +1125,11 @@ def orders_view(request):
         requested_qty[db_meal.id] = requested_qty.get(db_meal.id, 0) + qty
         if requested_qty[db_meal.id] > 50:
             return Response({'errors': {'lines': 'Cannot order more than 50 portions of a single dish.'}}, status=status.HTTP_400_BAD_REQUEST)
+        subtotal_acc += line_price * Decimal(qty)
         validated_lines.append({
             'mealId': db_meal.id,
             'name': db_meal.name,
+            # Numeric float preserved in JSON snapshot for frontend contract compatibility.
             'price': float(line_price),
             'qty': qty,
             'note': escape(str(line.get('note', '') or '').strip())[:200],
@@ -1139,11 +1143,8 @@ def orders_view(request):
     if vendor.user_id and str(vendor.user_id) == str(user.id):
         return Response({'message': 'You cannot order from your own kitchen.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Recalculate subtotal from server-validated lines using exact Decimal math
-    subtotal = sum(
-        (Decimal(str(line['price'])) * Decimal(line['qty']) for line in validated_lines),
-        Decimal('0.00'),
-    ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    # Exact Decimal subtotal directly accumulated from DB Decimal prices (no float round-trip)
+    subtotal = subtotal_acc.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     fee = (subtotal * Decimal('0.05')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     total = (subtotal + fee).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
@@ -1606,6 +1607,7 @@ def payouts_ledger_view(request):
 
     week_cutoff = dj_timezone.now() - timedelta(days=7)
     week_qs = paid_qs.filter(created_at__gte=week_cutoff)
+    # Intentional 2-decimal float formatting for read-only JSON display (all ledger math stays Decimal).
     week_total = round(float(week_qs.aggregate(total_sub=Sum('subtotal'))['total_sub'] or 0), 2)
     day_totals = {d: 0.0 for d in _ORDERED_DAY_KEYS}
     for row in week_qs.annotate(wd=ExtractWeekDay('created_at')).values('wd').annotate(day_sum=Sum('subtotal')):

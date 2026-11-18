@@ -78,8 +78,8 @@ def generate_6digit_code() -> str:
 
 
 # JWT access token lifetime. Configurable via settings.JWT_ACCESS_TOKEN_LIFETIME_HOURS.
-# Default: 24 hours. For production, consider 1 hour + refresh token flow.
-_JWT_LIFETIME_HOURS = int(getattr(settings, 'JWT_ACCESS_TOKEN_LIFETIME_HOURS', 24))
+# Default: 12 hours. For production with refresh tokens, consider 1 hour.
+_JWT_LIFETIME_HOURS = int(getattr(settings, 'JWT_ACCESS_TOKEN_LIFETIME_HOURS', 12))
 
 
 def password_fingerprint(user) -> str:
@@ -91,8 +91,9 @@ def password_fingerprint(user) -> str:
 def generate_jwt_token(user) -> str:
     """Generates a signed JWT access token. Lifetime controlled by JWT_ACCESS_TOKEN_LIFETIME_HOURS."""
     now = datetime.now(timezone.utc)
-    lifetime = int(getattr(settings, 'JWT_ACCESS_TOKEN_LIFETIME_HOURS', 24))
+    lifetime = int(getattr(settings, 'JWT_ACCESS_TOKEN_LIFETIME_HOURS', 12))
     payload = {
+        'iss': 'stew',
         'sub': str(user.id),
         'jti': secrets.token_hex(16),
         'role': user.role,
@@ -104,9 +105,15 @@ def generate_jwt_token(user) -> str:
 
 
 def decode_jwt_token(token: str) -> dict:
-    """Decodes and validates a JWT access token."""
+    """Decodes and validates a JWT access token, requiring iss='stew'."""
     try:
-        return jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
+        return jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=['HS256'],
+            issuer='stew',
+            options={'require': ['iss']},
+        )
     except jwt.ExpiredSignatureError:
         raise AuthenticationFailed('Token has expired. Please log in again.')
     except jwt.InvalidTokenError:
