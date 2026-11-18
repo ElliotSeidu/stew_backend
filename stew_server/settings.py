@@ -155,6 +155,13 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ---------------------------------------------------------------------------
+# Proxy / Rate Limiting Trust Boundary
+# 0 (default): ignore X-Forwarded-For and use REMOTE_ADDR only.
+# N > 0: take the Nth IP from the RIGHT of X-Forwarded-For (trusted proxies).
+# ---------------------------------------------------------------------------
+TRUSTED_PROXY_COUNT = max(0, int(os.getenv('TRUSTED_PROXY_COUNT', '0')))
+
+# ---------------------------------------------------------------------------
 # Django REST Framework
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
@@ -171,9 +178,10 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '60/min',
+        'anon': '300/min',
         'user': '120/min',
     },
+    'NUM_PROXIES': TRUSTED_PROXY_COUNT,
 }
 
 # ---------------------------------------------------------------------------

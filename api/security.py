@@ -1,10 +1,41 @@
 import hashlib
 import hmac
+import ipaddress
 import secrets
 from datetime import datetime, timedelta, timezone
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
 import jwt
+
+
+def get_client_ip(request) -> str:
+    """
+    Returns the client IP address for rate-limiting.
+    When settings.TRUSTED_PROXY_COUNT <= 0 (default), uses REMOTE_ADDR only.
+    When settings.TRUSTED_PROXY_COUNT == N > 0, takes the Nth IP from the RIGHT
+    of X-Forwarded-For (appended by trusted proxies), never trusting left-most entries.
+    """
+    meta = getattr(request, 'META', None) or {}
+    remote_addr = str(meta.get('REMOTE_ADDR') or '127.0.0.1').strip() or '127.0.0.1'
+    try:
+        trusted_count = int(getattr(settings, 'TRUSTED_PROXY_COUNT', 0) or 0)
+    except (TypeError, ValueError):
+        trusted_count = 0
+    if trusted_count <= 0:
+        return remote_addr
+
+    xff = str(meta.get('HTTP_X_FORWARDED_FOR') or '').strip()
+    if not xff:
+        return remote_addr
+    parts = [p.strip() for p in xff.split(',') if p.strip()]
+    if len(parts) < trusted_count:
+        return remote_addr
+    candidate = parts[-trusted_count]
+    try:
+        ipaddress.ip_address(candidate)
+        return candidate
+    except ValueError:
+        return remote_addr
 
 
 class _RateLimitCacheStore(dict):

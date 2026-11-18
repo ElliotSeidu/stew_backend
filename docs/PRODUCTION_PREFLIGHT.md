@@ -327,3 +327,15 @@ for o in odd_orders[:50]:
 - **`total_mismatch`**: Recompute `subtotal + fee` vs `total` and verify Paystack amount paid matches.
 - **Unrecognized `payment_status` / `prep_stage` (e.g., `'disputed'`)**: Resolve before launch so orders do not sit permanently stuck outside vendor/admin workflow filters.
 - **`stale_pending_gt_24h`**: Abandoned checkout orders still holding `Meal.left` stock. Cancel and restore stock (idempotently) if Paystack confirms no payment was captured for `payment_reference`.
+
+---
+
+## 7. Reverse Proxy (`TRUSTED_PROXY_COUNT`) & Campus NAT Rate Limits
+
+All security-critical rate limits (OTP verification, login code, password reset, payment initiation, handoff completion, order creation) are keyed per email, user, or order in PostgreSQL `RateLimitBucket`. The remaining IP-keyed flood guards (`register_view`, `forgot_password_view`, `reset_password_view`, `check_reference_view`, `analytics_event_view`, and DRF `AnonRateThrottle`) extract the client IP using `TRUSTED_PROXY_COUNT` (right-to-left parsing of `X-Forwarded-For`, never trusting the left-most header value) and allow campus-NAT ceilings (`100/hour` on registration/reset, `120/min` on reference-check/analytics, `300/min` DRF `anon`).
+
+| Hosting Topology | Required `TRUSTED_PROXY_COUNT` | Reverse Proxy Notes |
+|---|---|---|
+| Direct Gunicorn or reverse proxy rewrites `REMOTE_ADDR` (e.g. nginx with `set_real_ip_from` / UNIX socket only) | **`0`** *(default)* | Ignores `X-Forwarded-For` completely so spoofed headers have zero effect. |
+| Single managed reverse proxy / PaaS LB in front of Gunicorn (Render, Railway, Fly.io, DigitalOcean App Platform, AWS ALB, single nginx/Caddy) | **`1`** | Reads the right-most hop of `X-Forwarded-For` appended by your trusted edge/LB. Ensure Gunicorn is NOT directly reachable from the public internet bypassing the LB. |
+| CDN / WAF (e.g. Cloudflare) **in front of** your own nginx / AWS ALB | **`2`** | Counts Cloudflare + your LB from the right (`parts[-2]`). Lock nginx/ALB firewall to Cloudflare IPs so clients cannot inject hops before the LB. |

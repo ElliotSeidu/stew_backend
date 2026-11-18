@@ -39,7 +39,7 @@ from api.serializers import (
 )
 from api.security import (
     generate_6digit_code, hash_token, verify_hashed_token,
-    generate_jwt_token, check_rate_limit, revoke_jwt_token
+    generate_jwt_token, check_rate_limit, revoke_jwt_token, get_client_ip
 )
 from api.validators import clean_knust_email, validate_student_ref_id, validate_ghana_phone
 
@@ -316,9 +316,9 @@ def register_view(request):
     sells = data.get('sells', [])
     hall = data.get('hall') or data.get('area') or ''
 
-    # Rate limiting on registration (before DB queries to prevent email enumeration at scale)
-    ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
-    if not check_rate_limit(f"reg_{ip}", limit=10, window_seconds=600):
+    # Rate limiting on registration (per-email + generous per-IP NAT ceiling before DB queries)
+    ip = get_client_ip(request)
+    if not check_rate_limit(f"reg_email_{email}", limit=5, window_seconds=600) or not check_rate_limit(f"reg_{ip}", limit=100, window_seconds=3600):
         return Response({'detail': 'Too many registration requests. Please try again later.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     # Check for existing user (after rate limit to prevent email enumeration at scale)
@@ -607,8 +607,8 @@ def forgot_password_view(request):
     except ValidationError:
         return Response({'message': 'Only KNUST student emails (@st.knust.edu.gh) are permitted.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
-    if not check_rate_limit(f"forgot_{email}", limit=5, window_seconds=600) or not check_rate_limit(f"forgot_ip_{ip}", limit=15, window_seconds=600):
+    ip = get_client_ip(request)
+    if not check_rate_limit(f"forgot_{email}", limit=5, window_seconds=600) or not check_rate_limit(f"forgot_ip_{ip}", limit=100, window_seconds=3600):
         return Response({'message': 'Too many password reset requests. Please wait a few minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     try:
@@ -637,10 +637,12 @@ def reset_password_view(request):
     except ValidationError:
         return Response({'message': 'Invalid KNUST student email.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
-    if not check_rate_limit(f"reset_try_{email}", limit=5, window_seconds=600) or not check_rate_limit(f"reset_ip_{ip}", limit=15, window_seconds=600):
+    ip = get_client_ip(request)
+    if not check_rate_limit(f"reset_try_{email}", limit=5, window_seconds=600):
         User.objects.filter(email=email).update(reset_code_hash='', reset_code_expires=None)
         return Response({'message': 'Too many reset attempts. Request a new code after waiting 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    if not check_rate_limit(f"reset_ip_{ip}", limit=100, window_seconds=3600):
+        return Response({'message': 'Too many reset attempts from this network. Please wait a few minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     if len(new_password) < 8 or not any(c.isalpha() for c in new_password) or not any(c.isdigit() for c in new_password):
         return Response({'errors': {'password': 'Password must be at least 8 characters and contain letters and numbers.'}}, status=status.HTTP_400_BAD_REQUEST)
@@ -670,8 +672,8 @@ def reset_password_view(request):
 @permission_classes([AllowAny])
 def check_reference_view(request):
     """Verifies that a student reference ID exists on KNUST records."""
-    ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
-    if not check_rate_limit(f"check_ref_{ip}", limit=30, window_seconds=60):
+    ip = get_client_ip(request)
+    if not check_rate_limit(f"check_ref_{ip}", limit=120, window_seconds=60):
         return Response({'detail': 'Too many requests. Please slow down.', 'message': 'Too many requests. Please slow down.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     ref_id = request.data.get('referenceId', '')
     try:
@@ -2419,8 +2421,8 @@ def unsubscribe_push_view(request):
 def analytics_event_view(request):
     """Anonymous event tracking endpoint."""
     # Rate-limit by IP to prevent DB flooding from this unauthenticated endpoint
-    _ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
-    if not check_rate_limit(f"analytics_{_ip}", limit=30, window_seconds=60):
+    _ip = get_client_ip(request)
+    if not check_rate_limit(f"analytics_{_ip}", limit=120, window_seconds=60):
         return Response({'ok': True})  # Silent drop — don't reveal rate-limit to callers
     event = escape(str(request.data.get('event', 'unknown'))[:100])
     # Store a sanitized subset of the payload — never store raw arbitrary JSON

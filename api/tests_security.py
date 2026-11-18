@@ -2209,3 +2209,123 @@ class PaidAfterCancelOrphanPreventionTests(TestCase):
             )
             r = self.client.post('/api/payments/initialize/', {'orderId': o.id}, format='json')
             self.assertEqual(r.status_code, 400, f"Expected 400 for status={pstatus}, cancelled={is_cancelled}")
+
+
+class ProxyClientIpAndCampusNatRateLimitTests(TestCase):
+    """
+    REL-02: Right-to-left X-Forwarded-For extraction controlled by
+    TRUSTED_PROXY_COUNT (default 0 = REMOTE_ADDR only), generous per-IP NAT
+    ceilings so shared campus Wi-Fi does not lock out students, and strict
+    per-email OTP brute-force lockout enforcement.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+        _RATE_LIMIT_CACHE.clear()
+        cache.clear()
+        self.client = APIClient()
+
+    def test_get_client_ip_respects_trusted_proxy_count_right_to_left(self):
+        from django.test import RequestFactory
+        from api.security import get_client_ip
+
+        rf = RequestFactory()
+        self.assertEqual(getattr(settings, 'TRUSTED_PROXY_COUNT', None), 0)
+
+        # Count=0 (default): spoofed XFF must be completely ignored
+        req0 = rf.get(
+            '/api/auth/register/',
+            REMOTE_ADDR='196.201.1.10',
+            HTTP_X_FORWARDED_FOR='1.2.3.4, 5.6.7.8',
+        )
+        with override_settings(TRUSTED_PROXY_COUNT=0):
+            self.assertEqual(get_client_ip(req0), '196.201.1.10')
+
+        # Count=1: takes right-most hop added by single trusted proxy, ignoring spoofed left-most IP
+        req1 = rf.get(
+            '/api/auth/register/',
+            REMOTE_ADDR='10.0.0.1',
+            HTTP_X_FORWARDED_FOR='1.1.1.1, 198.51.100.25',
+        )
+        with override_settings(TRUSTED_PROXY_COUNT=1):
+            self.assertEqual(get_client_ip(req1), '198.51.100.25')
+
+        # Count=2: takes 2nd hop from right (CDN + LB/proxy), ignoring spoofed left-most IP
+        req2 = rf.get(
+            '/api/auth/register/',
+            REMOTE_ADDR='10.0.0.1',
+            HTTP_X_FORWARDED_FOR='1.1.1.1, 198.51.100.25, 10.0.0.5',
+        )
+        with override_settings(TRUSTED_PROXY_COUNT=2):
+            self.assertEqual(get_client_ip(req2), '198.51.100.25')
+
+        # Malformed / short XFF falls back safely to REMOTE_ADDR
+        req_bad = rf.get(
+            '/api/auth/register/',
+            REMOTE_ADDR='196.201.1.99',
+            HTTP_X_FORWARDED_FOR='not-an-ip, 10.0.0.5',
+        )
+        with override_settings(TRUSTED_PROXY_COUNT=2):
+            self.assertEqual(get_client_ip(req_bad), '196.201.1.99')
+
+        req_short = rf.get(
+            '/api/auth/register/',
+            REMOTE_ADDR='196.201.1.98',
+            HTTP_X_FORWARDED_FOR='198.51.100.25',
+        )
+        with override_settings(TRUSTED_PROXY_COUNT=2):
+            self.assertEqual(get_client_ip(req_short), '196.201.1.98')
+
+    def test_campus_nat_many_distinct_emails_not_blocked_while_single_email_otp_still_locks(self):
+        # 25 different students registering & requesting password reset from the same campus NAT IP
+        for i in range(25):
+            email = f'nat.student{i}@st.knust.edu.gh'
+            r_reg = self.client.post(
+                '/api/auth/register/',
+                {
+                    'fullName': f'NAT Student {i}',
+                    'email': email,
+                    'referenceId': f'2091{i:04d}',
+                    'phone': f'0249{i:06d}',
+                    'accountType': 'customer',
+                    'password': 'Password123',
+                },
+                format='json',
+                REMOTE_ADDR='196.201.55.10',
+            )
+            self.assertEqual(r_reg.status_code, 201, f'Student {i} reg failed: {r_reg.data}')
+
+            r_fp = self.client.post(
+                '/api/auth/forgot-password/',
+                {'email': email},
+                format='json',
+                REMOTE_ADDR='196.201.55.10',
+            )
+            self.assertEqual(r_fp.status_code, 200, f'Student {i} forgot-password failed: {r_fp.data}')
+
+        # Single email repeated OTP failures (6th try) still hits 429 and burns OTP regardless of rotating IP/XFF
+        target = User.objects.get(email='nat.student0@st.knust.edu.gh')
+        target.verification_code_hash = hash_token('765432')
+        target.verification_code_expires = timezone.now() + timedelta(minutes=15)
+        target.save(update_fields=['verification_code_hash', 'verification_code_expires'])
+
+        for i in range(5):
+            r_bad = self.client.post(
+                '/api/auth/verify-email/',
+                {'email': target.email, 'code': '000000'},
+                format='json',
+                REMOTE_ADDR=f'198.51.100.{i + 1}',
+                HTTP_X_FORWARDED_FOR=f'203.0.113.{i + 1}',
+            )
+            self.assertEqual(r_bad.status_code, 400)
+
+        r_lock = self.client.post(
+            '/api/auth/verify-email/',
+            {'email': target.email, 'code': '765432'},
+            format='json',
+            REMOTE_ADDR='198.51.100.99',
+            HTTP_X_FORWARDED_FOR='203.0.113.99',
+        )
+        self.assertEqual(r_lock.status_code, 429)
+        target.refresh_from_db()
+        self.assertEqual(target.verification_code_hash, '')
