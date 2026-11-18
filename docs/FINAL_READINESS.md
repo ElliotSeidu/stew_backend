@@ -157,6 +157,7 @@ The following items cannot be verified from a local/WSL2 test environment and MU
      - `DB_ENGINE=postgresql`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT=5432`, `DB_SSLMODE=require`
      - `RATE_LIMIT_BACKEND=db` (default, safe multi-worker PostgreSQL locks) and optional `REDIS_URL=redis://...` for `CACHES` / DRF throttles
      - `TRUSTED_PROXY_COUNT=0` (set to exact number of trusted reverse proxy hops — e.g. `1` behind a single nginx/Cloudflare hop — per `docs/PRODUCTION_PREFLIGHT.md` Section 7; never trust arbitrary client `X-Forwarded-For` prefixes)
+     - `THROTTLE_ANON_PER_MIN=1000`, `THROTTLE_USER_PER_MIN=120` (global DRF throttle ceilings per minute)
      - `JWT_ACCESS_TOKEN_LIFETIME_HOURS=12` (current default `12`; tighten to `1`–`4` once refresh token rotation is deployed)
      - Optional initial admin bootstrap only: `SEED_ADMIN_PASSWORD=<12+ char strong secret>`
 5. **Apply Database Migrations on Copy First, Then Production**
@@ -181,8 +182,70 @@ The following items cannot be verified from a local/WSL2 test environment and MU
    - Verify HTTPS redirect, TLS cert, `GET /api/vendors/` `200`, `POST /api/payments/initialize/` unauthenticated returns `401`, non-KNUST email signup returns `400`, `/admin/` rejects non-`is_admin` staff accounts, and run Section 6 dry-run on staging / live micro-order.
 9. **Schedule Daily Rate-Limit & Revocation Cleanup Cron**
    - Configure a daily cron / systemd timer (see `docs/PRODUCTION_PREFLIGHT.md` Section 8):
-     `0 3 * * * cd /srv/stew/stew_backend && ./venv/bin/python manage.py cleanup_rate_limits`
-     to delete expired `RateLimitBucket` rows and expired JWT `jti` revocation entries in batches (`--batch-size 1000`).
+     `15 3 * * * cd /srv/stew/stew_backend && ./venv/bin/python manage.py cleanup_rate_limits --batch-size 1000 --margin-seconds 3600`
+     to delete expired `RateLimitBucket` rows and expired JWT `jti` revocation entries in batches (`--batch-size 1000`, retaining revocations beyond `JWT_ACCESS_TOKEN_LIFETIME_HOURS + margin_seconds`).
+
+### Incident Runbook: Compromised or Lost Admin Account
+
+The API dashboard blocks suspending `is_admin=True` accounts (`admin_user_detail_view` returns `400`). If an admin account is compromised, suspected stolen, or all active admins are locked out, execute these steps directly from a server Django shell (`python manage.py shell`):
+
+1. **Deactivate the compromised account & invalidate all issued JWTs / OTP codes (`is_active=False`):**
+   ```python
+   from django.contrib.sessions.models import Session
+   from api.models import User
+
+   target_email = "<compromised-admin>@st.knust.edu.gh"
+   u = User.objects.get(email=target_email)
+   u.is_active = False
+   u.is_admin = False  # remove admin flag if compromised rather than temporarily suspended
+   u.set_unusable_password()  # rotates password_fingerprint ('pv'), failing existing JWTs immediately
+   u.verification_code_hash = u.login_code_hash = u.reset_code_hash = ""
+   u.verification_code_expires = u.login_code_expires = u.reset_code_expires = None
+   u.save()
+
+   # Clear active Django /admin/ cookie sessions (forces re-auth for remaining operators too)
+   Session.objects.all().delete()
+   ```
+   - `is_active=False` immediately blocks `JWTAuthentication`, password login (`login_view`), login-code (`login_with_code_view`, `request_login_code_view`), password reset (`forgot_password_view`, `reset_password_view`), `IsAdminUser`, and Django `/admin/`.
+
+2. **Explicit `jti` token revocation (when specific tokens/JTIs are known):**
+   ```python
+   from api.security import revoke_jwt_token
+
+   # If you have a raw JWT string from logs/device storage:
+   revoke_jwt_token("<raw_jwt_token>")
+   # Or if only the 'jti' claim was logged:
+   revoke_jwt_token("incident-revoke", payload={"jti": "<jti_value>"})
+   ```
+   - *Note:* STEW maintains a persistent revocation blocklist (`RateLimitBucket`, keyed by `jwt_revoked_<jti>`) rather than indexing every active `jti`. Unknown tokens for the compromised user are still rejected immediately by Step 1 (`is_active=False` + `pv` mismatch), and platform-wide by Step 3.
+
+3. **Rotate `SECRET_KEY` if JWTs, OTP secrets, or credentials may have been stolen:**
+   - Generate a new 64-byte key: `python -c "import secrets; print(secrets.token_urlsafe(64))"`
+   - Update `SECRET_KEY` in the production `.env` / secrets manager and restart all Gunicorn workers/services.
+   - Rotating `SECRET_KEY` immediately invalidates every active JWT signature (`HS256`), every outstanding OTP hash, and every Django `/admin/` session across the entire platform.
+
+4. **Review the audit log for that actor & verify admin roster:**
+   ```python
+   from api.models import AuditEntry, User
+
+   for e in AuditEntry.objects.filter(actor=target_email).order_by("-at")[:200]:
+       print(e.at.isoformat(), e.action, e.entity_type, e.entity_id, e.extra)
+
+   print(list(User.objects.filter(is_admin=True).values_list("email", "is_active", "verified")))
+   ```
+   - Inspect all sensitive actions (`payout_batch_created`, `case_refund`, `case_dismiss`, `admin_vendor_updated`, `admin_user_status`, `review_*`), reconcile any triggered `PayoutBatch` / refunds against the Paystack dashboard, and verify no unauthorized user gained `is_admin=True`.
+
+5. **Recovering from a lost admin (no remaining active operator):**
+   ```python
+   from api.models import User
+
+   op = User.objects.get(email="<authorized-replacement>@st.knust.edu.gh")
+   op.is_admin = True
+   op.is_active = True
+   op.verified = True
+   op.set_password("<strong-16plus-char-password>")
+   op.save()
+   ```
 
 ---
 
