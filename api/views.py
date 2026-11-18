@@ -1296,7 +1296,7 @@ def init_payment_view(request):
             return Response({'message': 'This order was cancelled'}, status=status.HTTP_400_BAD_REQUEST)
         if order.payment_status in ['paid', 'released']:
             return Response({'message': 'This order is already paid'}, status=status.HTTP_400_BAD_REQUEST)
-        if order.payment_status in ['refunded', 'refund_pending', 'cancelled']:
+        if order.payment_status != 'pending':
             return Response({'message': 'This order can no longer be paid for'}, status=status.HTTP_400_BAD_REQUEST)
 
         amount_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
@@ -1327,7 +1327,9 @@ def init_payment_view(request):
     if existing_ref:
         ok_existing, _, _ = _paystack_verify(existing_ref, order)
         if ok_existing:
-            _mark_order_paid(order, request.user.email, existing_ref)
+            updated = _mark_order_paid(order, request.user.email, existing_ref)
+            if updated.cancelled_at or updated.payment_status in ('refund_pending', 'refunded', 'cancelled'):
+                return Response({'message': 'This order was cancelled and a refund is pending.'}, status=status.HTTP_400_BAD_REQUEST)
             return Response({'message': 'This order is already paid'}, status=status.HTTP_400_BAD_REQUEST)
 
     reference = existing_ref or f"PSK-{secrets.token_hex(8).upper()}"
@@ -1355,7 +1357,7 @@ def init_payment_view(request):
 
     with transaction.atomic():
         locked = Order.objects.select_for_update().get(id=locked_order_id)
-        if locked.cancelled_at or locked.payment_status in ['paid', 'released', 'refunded', 'refund_pending', 'cancelled']:
+        if locked.cancelled_at or locked.payment_status != 'pending':
             return Response({'message': 'This order can no longer be paid for'}, status=status.HTTP_400_BAD_REQUEST)
         if not locked.payment_reference:
             locked.payment_reference = reference
@@ -1376,18 +1378,37 @@ def init_payment_view(request):
 
 
 def _mark_order_paid(order, actor, reference):
-    """Idempotently moves an order into escrow-held 'paid' state, never reviving cancelled/refunded orders."""
+    """Idempotently moves an order into escrow-held 'paid' state, or 'refund_pending' if paid after cancellation."""
     with transaction.atomic():
         locked = Order.objects.select_for_update().get(pk=order.pk)
-        if locked.cancelled_at or locked.payment_status in ('cancelled', 'refunded', 'refund_pending'):
+        if locked.payment_status in ('paid', 'released', 'refunded', 'refund_pending'):
             return locked
-        if locked.payment_status in ['paid', 'released']:
+        if locked.cancelled_at or locked.payment_status == 'cancelled':
+            locked.payment_status = 'refund_pending'
+            if not locked.paid_at:
+                locked.paid_at = dj_timezone.now()
+            update_fields = ['payment_status', 'paid_at']
+            if reference and not locked.payment_reference:
+                locked.payment_reference = reference
+                update_fields.append('payment_reference')
+            locked.save(update_fields=update_fields)
+            record_audit(
+                actor,
+                'payment_received_after_cancel',
+                'order',
+                locked.id,
+                {
+                    'reference': reference,
+                    'amount': str(locked.total),
+                    'payment_status': 'refund_pending',
+                },
+            )
             return locked
         locked.payment_status = 'paid'
         locked.paid_at = dj_timezone.now()
         locked.settlement_status = 'pending'  # Escrow held until student confirms collection
         locked.save(update_fields=['payment_status', 'paid_at', 'settlement_status'])
-        record_audit(actor, 'payment_verified', 'order', locked.id, {'reference': reference})
+        record_audit(actor, 'payment_verified', 'order', locked.id, {'reference': reference, 'amount': str(locked.total)})
         return locked
 
 
@@ -1450,10 +1471,20 @@ def verify_payment_view(request):
     if not (_is_order_owner(user, order) or is_platform_admin(user)):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
-    if order.payment_status in ['paid', 'released']:
+    if order.payment_status in ['paid', 'released'] and not order.cancelled_at:
         return Response(OrderSerializer(order, context={'request': request}).data)
 
-    if order.cancelled_at:
+    if order.payment_status in ('refund_pending', 'refunded'):
+        return Response(
+            {
+                'message': 'This order was cancelled and a refund is pending.',
+                'code': 'refund_pending',
+                'paymentStatus': order.payment_status,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if order.cancelled_at and not order.payment_reference:
         return Response({'message': 'This order was cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
 
     # The reference MUST be the one we issued for this order — prevents replaying a
@@ -1471,6 +1502,15 @@ def verify_payment_view(request):
         return Response({'message': 'Payments are not configured yet. Please contact support.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     order = _mark_order_paid(order, user.email, reference)
+    if order.cancelled_at or order.payment_status != 'paid':
+        return Response(
+            {
+                'message': 'This order was cancelled and a refund is pending.',
+                'code': 'refund_pending',
+                'paymentStatus': order.payment_status,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
@@ -1506,8 +1546,7 @@ def paystack_webhook_view(request):
             order = Order.objects.filter(payment_reference=reference).first() if reference else None
             if (
                 order
-                and not order.cancelled_at
-                and order.payment_status not in ['paid', 'released', 'refunded', 'refund_pending', 'cancelled']
+                and order.payment_status not in ['paid', 'released', 'refunded', 'refund_pending']
                 and ev_status == 'success'
                 and ev_currency == 'GHS'
             ):

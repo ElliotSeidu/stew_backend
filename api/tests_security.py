@@ -1164,6 +1164,108 @@ class PostgresLockingAndConcurrencyTests(TransactionTestCase):
         race3_statuses = _race([_batch_race, _batch_race])
         self.assertEqual(sorted(race3_statuses), [201, 400], race3_statuses)
 
+        # Race 4: verify_payment_view racing cancel_order_view on PostgreSQL threads
+        from api.models import AuditEntry
+        vc_order = Order.objects.create(
+            id='STW-PG-RACE4', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='pending', prep_stage='accepted',
+            payment_reference='PSK-PG-RACE4',
+            lines=[{'mealId': self.meal_z.id, 'qty': 1}],
+        )
+        verify_entered_http = threading.Event()
+        cancel_finished = threading.Event()
+
+        def _fake_pg_verify_get(*args, **kwargs):
+            verify_entered_http.set()
+            cancel_finished.wait(timeout=5)
+            resp = MagicMock(ok=True)
+            resp.json.return_value = {
+                'status': True,
+                'data': {'status': 'success', 'reference': 'PSK-PG-RACE4', 'currency': 'GHS', 'amount': 2100},
+            }
+            return resp
+
+        def _verify_mid_http():
+            c = APIClient()
+            c.force_authenticate(user=self.student)
+            r = c.post('/api/payments/verify/', {'orderId': vc_order.id, 'reference': 'PSK-PG-RACE4'}, format='json')
+            return ('verify', r.status_code, r.data)
+
+        def _cancel_mid_http():
+            verify_entered_http.wait(timeout=5)
+            c = APIClient()
+            c.force_authenticate(user=self.student)
+            r = c.post(f'/api/orders/{vc_order.id}/cancel/', {}, format='json')
+            cancel_finished.set()
+            return ('cancel', r.status_code, r.data)
+
+        with override_settings(PAYSTACK_SECRET_KEY='sk_test_pg_race'):
+            with patch('api.views.http_requests.get', side_effect=_fake_pg_verify_get):
+                t1_res = {}
+                t2_res = {}
+
+                def _run_t(target_fn, store, k):
+                    connections.close_all()
+                    try:
+                        store[k] = target_fn()
+                    finally:
+                        connections.close_all()
+
+                th1 = threading.Thread(target=_run_t, args=(_verify_mid_http, t1_res, 'res'))
+                th2 = threading.Thread(target=_run_t, args=(_cancel_mid_http, t2_res, 'res'))
+                th1.start()
+                th2.start()
+                th1.join(timeout=15)
+                th2.join(timeout=15)
+
+        self.assertEqual(t2_res['res'][1], 200, t2_res['res'])
+        self.assertEqual(t1_res['res'][1], 400, t1_res['res'])
+        self.assertIn('refund', t1_res['res'][2].get('message', '').lower())
+        vc_order.refresh_from_db()
+        self.assertIsNotNone(vc_order.cancelled_at)
+        self.assertIsNotNone(vc_order.paid_at)
+        self.assertEqual(vc_order.payment_status, 'refund_pending')
+        self.assertTrue(
+            AuditEntry.objects.filter(entity_id=vc_order.id, action='payment_received_after_cancel').exists()
+        )
+
+        # Uncoordinated barrier race between verify and cancel
+        bar_order = Order.objects.create(
+            id='STW-PG-RACE5', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='pending', prep_stage='accepted',
+            payment_reference='PSK-PG-RACE5',
+            lines=[{'mealId': self.meal_z.id, 'qty': 1}],
+        )
+        ok_resp = MagicMock(ok=True)
+        ok_resp.json.return_value = {
+            'status': True,
+            'data': {'status': 'success', 'reference': 'PSK-PG-RACE5', 'currency': 'GHS', 'amount': 2100},
+        }
+        with override_settings(PAYSTACK_SECRET_KEY='sk_test_pg_race'):
+            with patch('api.views.http_requests.get', return_value=ok_resp):
+                def _verify_bar():
+                    c = APIClient()
+                    c.force_authenticate(user=self.student)
+                    return ('verify', c.post('/api/payments/verify/', {'orderId': bar_order.id, 'reference': 'PSK-PG-RACE5'}, format='json').status_code)
+
+                def _cancel_bar():
+                    c = APIClient()
+                    c.force_authenticate(user=self.student)
+                    return ('cancel', c.post(f'/api/orders/{bar_order.id}/cancel/', {}, format='json').status_code)
+
+                bar_results = dict(_race([_verify_bar, _cancel_bar]))
+
+        self.assertEqual(bar_results['cancel'], 200, bar_results)
+        self.assertIn(bar_results['verify'], (200, 400), bar_results)
+        bar_order.refresh_from_db()
+        self.assertIsNotNone(bar_order.cancelled_at)
+        self.assertIsNotNone(bar_order.paid_at)
+        self.assertIn(bar_order.payment_status, ('refund_pending', 'refunded'))
+
 
 class PaginationAndAggregateTests(TestCase):
     """
@@ -1413,6 +1515,7 @@ class AtomicStateAndUploadSecurityTests(TestCase):
         self.client = APIClient()
 
     def test_mark_order_paid_refuses_cancelled_or_refunded_order(self):
+        from api.models import AuditEntry
         from api.views import _mark_order_paid
         now = timezone.now()
         o_can = Order.objects.create(
@@ -1423,8 +1526,27 @@ class AtomicStateAndUploadSecurityTests(TestCase):
         )
         _mark_order_paid(o_can, 'paystack_webhook', 'PSK-CAN-1')
         o_can.refresh_from_db()
-        self.assertEqual(o_can.payment_status, 'cancelled')
-        self.assertIsNone(o_can.paid_at)
+        self.assertIsNotNone(o_can.cancelled_at)
+        self.assertNotEqual(o_can.payment_status, 'paid')
+        self.assertEqual(o_can.payment_status, 'refund_pending')
+        self.assertIsNotNone(o_can.paid_at)
+        self.assertEqual(o_can.payment_reference, 'PSK-CAN-1')
+        self.assertTrue(
+            AuditEntry.objects.filter(
+                entity_id=o_can.id, action='payment_received_after_cancel'
+            ).exists()
+        )
+
+        # Already refunded order remains 'refunded' idempotently
+        o_ref = Order.objects.create(
+            id='STW-ATOM-REF', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='refunded', cancelled_at=now, paid_at=now,
+        )
+        _mark_order_paid(o_ref, 'paystack_webhook', 'PSK-REF-1')
+        o_ref.refresh_from_db()
+        self.assertEqual(o_ref.payment_status, 'refunded')
 
     def test_meetup_chat_and_nudge_block_unpaid_orders(self):
         unpaid = Order.objects.create(
@@ -1931,3 +2053,159 @@ class SettingsAndAdminHardeningTests(TestCase):
         self.assertIn("default-src 'none'", csp)
         self.assertIn("frame-ancestors 'none'", csp)
         self.assertTrue(r.headers.get('Permissions-Policy'))
+
+
+class PaidAfterCancelOrphanPreventionTests(TestCase):
+    """
+    REL-01: Paystack confirmation after cancellation (cancel then webhook,
+    cancel then verify, duplicate webhooks) must record payment reception,
+    transition the order to refund_pending under row lock with AuditEntry,
+    and return an explicit non-200 error on verify_payment_view.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='pac.student@st.knust.edu.gh', password='Password123',
+            full_name='PAC Student', reference_id='20892001', phone='0249200001',
+            hall='Unity Hall', verified=True,
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='pac.vendor@st.knust.edu.gh', password='Password123',
+            full_name='PAC Vendor', reference_id='20892002', phone='0249200002',
+            hall='Unity Hall', verified=True, is_vendor=True, role='vendor', account_type='vendor',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_pac1', user=cls.vendor_user, name='PAC Kitchen',
+            hall='Unity Hall', open=True, active=True,
+        )
+        cls.meal = Meal.objects.create(
+            id='m_pac1', vendor=cls.vendor, name='PAC Jollof',
+            price=Decimal('20.00'), left=10, on=True,
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+
+    def _signed_webhook(self, payload_dict, secret='sk_test_pac_sec'):
+        raw = json.dumps(payload_dict).encode('utf-8')
+        sig = hmac.new(secret.encode('utf-8'), raw, hashlib.sha512).hexdigest()
+        return self.client.post(
+            '/api/payments/webhook/',
+            data=raw,
+            content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=sig,
+        )
+
+    @override_settings(PAYSTACK_SECRET_KEY='sk_test_pac_sec')
+    def test_cancel_then_webhook_and_duplicate_webhook_are_recorded_and_idempotent(self):
+        from api.models import AuditEntry
+        order = Order.objects.create(
+            id='STW-PAC-WH1', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='pending', payment_reference='PSK-PAC-WH1',
+            lines=[{'mealId': self.meal.id, 'qty': 1}],
+        )
+        self.client.force_authenticate(user=self.student)
+        r_can = self.client.post(f'/api/orders/{order.id}/cancel/', {}, format='json')
+        self.assertEqual(r_can.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.payment_status, 'cancelled')
+        self.assertIsNotNone(order.cancelled_at)
+
+        self.client.credentials()
+        mock_resp = MagicMock(ok=True)
+        mock_resp.json.return_value = {
+            'status': True,
+            'data': {'status': 'success', 'reference': 'PSK-PAC-WH1', 'currency': 'GHS', 'amount': 2100},
+        }
+        payload = {
+            'event': 'charge.success',
+            'data': {'status': 'success', 'reference': 'PSK-PAC-WH1', 'currency': 'GHS', 'amount': 2100},
+        }
+        with patch('api.views.http_requests.get', return_value=mock_resp) as mock_get:
+            r_wh1 = self._signed_webhook(payload)
+            self.assertEqual(r_wh1.status_code, 200)
+            self.assertEqual(mock_get.call_count, 1)
+
+            order.refresh_from_db()
+            self.assertEqual(order.payment_status, 'refund_pending')
+            self.assertIsNotNone(order.cancelled_at)
+            self.assertIsNotNone(order.paid_at)
+            first_paid_at = order.paid_at
+
+            audits = AuditEntry.objects.filter(entity_id=order.id, action='payment_received_after_cancel')
+            self.assertEqual(audits.count(), 1)
+            audit = audits.first()
+            self.assertEqual(audit.extra.get('reference'), 'PSK-PAC-WH1')
+            self.assertEqual(audit.extra.get('amount'), '21.00')
+
+            # Duplicate webhook must be idempotent (no second verify API call, no second audit)
+            r_wh2 = self._signed_webhook(payload)
+            self.assertEqual(r_wh2.status_code, 200)
+            self.assertEqual(mock_get.call_count, 1)
+            order.refresh_from_db()
+            self.assertEqual(order.payment_status, 'refund_pending')
+            self.assertEqual(order.paid_at, first_paid_at)
+            self.assertEqual(
+                AuditEntry.objects.filter(entity_id=order.id, action='payment_received_after_cancel').count(),
+                1,
+            )
+
+    @override_settings(PAYSTACK_SECRET_KEY='sk_test_pac_sec')
+    def test_cancel_then_verify_returns_error_and_marks_refund_pending(self):
+        from api.models import AuditEntry
+        order = Order.objects.create(
+            id='STW-PAC-VER1', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('20.00'), fee=Decimal('1.00'), total=Decimal('21.00'),
+            payment_status='cancelled', cancelled_at=timezone.now(),
+            payment_reference='PSK-PAC-VER1',
+            lines=[{'mealId': self.meal.id, 'qty': 1}],
+        )
+        mock_resp = MagicMock(ok=True)
+        mock_resp.json.return_value = {
+            'status': True,
+            'data': {'status': 'success', 'reference': 'PSK-PAC-VER1', 'currency': 'GHS', 'amount': 2100},
+        }
+        self.client.force_authenticate(user=self.student)
+        with patch('api.views.http_requests.get', return_value=mock_resp):
+            r = self.client.post(
+                '/api/payments/verify/',
+                {'orderId': order.id, 'reference': 'PSK-PAC-VER1'},
+                format='json',
+            )
+        self.assertEqual(r.status_code, 400)
+        msg = r.data.get('message', '').lower()
+        self.assertIn('cancelled', msg)
+        self.assertIn('refund pending', msg.replace('refund is pending', 'refund pending'))
+        self.assertEqual(r.data.get('code'), 'refund_pending')
+
+        order.refresh_from_db()
+        self.assertEqual(order.payment_status, 'refund_pending')
+        self.assertIsNotNone(order.paid_at)
+        self.assertEqual(
+            AuditEntry.objects.filter(entity_id=order.id, action='payment_received_after_cancel').count(),
+            1,
+        )
+
+    @override_settings(DEBUG=True, PAYSTACK_ALLOW_MOCK=True, PAYSTACK_SECRET_KEY='')
+    def test_init_payment_refuses_cancelled_and_refund_states(self):
+        self.client.force_authenticate(user=self.student)
+        for idx, (pstatus, is_cancelled) in enumerate([
+            ('cancelled', True),
+            ('refund_pending', True),
+            ('refunded', True),
+            ('pending', True),
+        ]):
+            o = Order.objects.create(
+                id=f'STW-PAC-INIT{idx}', customer=self.student, email=self.student.email,
+                vendor=self.vendor, vendor_name=self.vendor.name,
+                subtotal=Decimal('10.00'), fee=Decimal('0.50'), total=Decimal('10.50'),
+                payment_status=pstatus,
+                cancelled_at=timezone.now() if is_cancelled else None,
+            )
+            r = self.client.post('/api/payments/initialize/', {'orderId': o.id}, format='json')
+            self.assertEqual(r.status_code, 400, f"Expected 400 for status={pstatus}, cancelled={is_cancelled}")
