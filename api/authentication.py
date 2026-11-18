@@ -83,6 +83,11 @@ class IsVendorUser(permissions.BasePermission):
 
 
 class IsAdminUser(permissions.BasePermission):
-    """Allows access only to administrator users."""
+    """Allows access only to active, verified administrator users."""
     def has_permission(self, request, view):
-        return is_platform_admin(request.user)
+        return bool(
+            request.user
+            and request.user.is_active
+            and getattr(request.user, 'verified', False)
+            and is_platform_admin(request.user)
+        )

@@ -323,7 +323,7 @@ def register_view(request):
 
     # Check for existing user (after rate limit to prevent email enumeration at scale)
     existing_user = User.objects.filter(email=email).first()
-    if existing_user and existing_user.verified:
+    if existing_user and (existing_user.verified or not existing_user.is_active):
         return Response({
             'errors': {'email': 'An account with this email already exists.'},
             'message': 'An account with this email already exists.'
@@ -416,7 +416,7 @@ def verify_email_view(request):
         return Response({'message': 'Too many failed verification attempts. Request a new code and wait 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     try:
-        user = User.objects.get(email=email)
+        user = User.objects.get(email=email, is_active=True)
     except User.DoesNotExist:
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -476,7 +476,7 @@ def resend_code_view(request):
         return Response({'message': 'Please wait a few minutes before requesting another code.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     try:
-        user = User.objects.get(email=email)
+        user = User.objects.get(email=email, is_active=True)
         code = generate_6digit_code()
         user.verification_code_hash = hash_token(code)
         user.verification_code_expires = dj_timezone.now() + timedelta(minutes=15)
@@ -514,6 +514,9 @@ def login_view(request):
 
     if not user.check_password(password):
         return Response({'message': 'Incorrect email or password'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not user.is_active:
+        return Response({'message': 'This account has been suspended. Contact support.'}, status=status.HTTP_403_FORBIDDEN)
 
     if not user.verified:
         code = generate_6digit_code()
@@ -573,7 +576,7 @@ def login_with_code_view(request):
         return Response({'message': 'Too many failed attempts. Request a new login code after waiting 10 minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     try:
-        user = User.objects.get(email=email)
+        user = User.objects.get(email=email, is_active=True)
     except User.DoesNotExist:
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -613,7 +616,7 @@ def forgot_password_view(request):
         return Response({'message': 'Too many password reset requests. Please wait a few minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     try:
-        user = User.objects.get(email=email)
+        user = User.objects.get(email=email, is_active=True)
         code = generate_6digit_code()
         user.reset_code_hash = hash_token(code)
         user.reset_code_expires = dj_timezone.now() + timedelta(minutes=15)
@@ -649,7 +652,7 @@ def reset_password_view(request):
         return Response({'errors': {'password': 'Password must be at least 8 characters and contain letters and numbers.'}}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        user = User.objects.get(email=email)
+        user = User.objects.get(email=email, is_active=True)
     except User.DoesNotExist:
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -2435,7 +2438,20 @@ def admin_user_detail_view(request, pk):
 
     if 'active' in request.data:
         target.is_active = bool(request.data['active'])
-        target.save(update_fields=['is_active'])
+        update_fields = ['is_active']
+        if not target.is_active:
+            target.verification_code_hash = ''
+            target.verification_code_expires = None
+            target.login_code_hash = ''
+            target.login_code_expires = None
+            target.reset_code_hash = ''
+            target.reset_code_expires = None
+            update_fields.extend([
+                'verification_code_hash', 'verification_code_expires',
+                'login_code_hash', 'login_code_expires',
+                'reset_code_hash', 'reset_code_expires',
+            ])
+        target.save(update_fields=update_fields)
         record_audit(request.user.email, 'admin_user_status', 'user', target.id, {'active': target.is_active})
 
     return Response(AdminUserSerializer(target).data)

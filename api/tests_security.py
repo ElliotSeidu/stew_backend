@@ -2926,3 +2926,378 @@ class JwtIssuerAndDecimalSubtotalTests(_DjangoTestCase):
         self.assertIsInstance(res.data['lines'][0]['price'], float)
 
 
+class SuspendedUserAuthSecurityTests(TestCase):
+    """
+    RC1-01: Users with is_active=False must not be able to log in with password,
+    request or redeem login codes, initiate or complete password reset, verify/resend
+    email OTPs, re-register over a suspended unverified account, or use any JWT issued
+    before suspension on any authenticated endpoint.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='susp.student@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Suspended Student',
+            reference_id='20950001',
+            phone='0249500001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+            is_active=True,
+            role='customer',
+            account_type='customer',
+        )
+        cls.unverified_student = User.objects.create_user(
+            email='susp.unverified@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Suspended Unverified',
+            reference_id='20950002',
+            phone='0249500002',
+            hall='Africa Hall',
+            verified=False,
+            is_active=True,
+            role='customer',
+            account_type='customer',
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='susp.vendor@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Suspended Vendor',
+            reference_id='20950003',
+            phone='0249500003',
+            hall='Republic Hall',
+            verified=True,
+            is_active=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='Suspended Kitchen',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_susp_1',
+            user=cls.vendor_user,
+            name='Suspended Kitchen',
+            hall='Republic Hall',
+            open=True,
+            active=True,
+        )
+        cls.inactive_vendor_user = User.objects.create_user(
+            email='susp.inactvendor@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Inactive Vendor Owner',
+            reference_id='20950004',
+            phone='0249500004',
+            hall='Republic Hall',
+            verified=True,
+            is_active=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='Pending Kitchen',
+        )
+        cls.inactive_vendor = Vendor.objects.create(
+            id='v_susp_inact',
+            user=cls.inactive_vendor_user,
+            name='Pending Kitchen',
+            hall='Republic Hall',
+            open=False,
+            active=False,
+        )
+        cls.admin_user = User.objects.create_superuser(
+            email='susp.admin@st.knust.edu.gh',
+            password='AdminPassword123!',
+            full_name='Suspended Admin',
+            reference_id='20950005',
+            phone='0249500005',
+            hall='Commercial Area',
+            is_active=True,
+            verified=True,
+        )
+        cls.active_admin = User.objects.create_superuser(
+            email='active.admin@st.knust.edu.gh',
+            password='AdminPassword123!',
+            full_name='Active Admin',
+            reference_id='20950006',
+            phone='0249500006',
+            hall='Commercial Area',
+            is_active=True,
+            verified=True,
+        )
+        cls.meal = Meal.objects.create(
+            id='m_susp_1',
+            vendor=cls.vendor,
+            name='Susp Jollof',
+            price=Decimal('25.00'),
+            left=10,
+            on=True,
+        )
+        cls.hidden_order = Order.objects.create(
+            id='STW-SUSP-HID',
+            customer=cls.student,
+            customer_name=cls.student.full_name,
+            email=cls.student.email,
+            phone=cls.student.phone,
+            area='Campus',
+            vendor=cls.vendor,
+            vendor_name=cls.vendor.name,
+            subtotal=Decimal('25.00'),
+            fee=Decimal('1.25'),
+            total=Decimal('26.25'),
+            payment_status='released',
+            settlement_status='released',
+            prep_stage='collected',
+            collected_at=timezone.now(),
+        )
+        cls.hidden_review = Review.objects.create(
+            order_id=cls.hidden_order.id,
+            vendor=cls.vendor,
+            vendor_name=cls.vendor.name,
+            customer=cls.student,
+            rating=1,
+            text='Hidden moderation review',
+            moderation_status='hidden',
+        )
+
+    def setUp(self):
+        from django.core.cache import cache
+        _RATE_LIMIT_CACHE.clear()
+        cache.clear()
+        self.client = APIClient()
+
+    def test_suspended_user_cannot_login_with_password(self):
+        User.objects.filter(pk=self.student.pk).update(is_active=False)
+        User.objects.filter(pk=self.unverified_student.pk).update(is_active=False)
+
+        # Correct password on suspended verified user -> 403, no JWT
+        r_good = self.client.post('/api/auth/login/', {
+            'email': self.student.email,
+            'password': 'Password123!',
+        }, format='json')
+        self.assertEqual(r_good.status_code, 403)
+        self.assertNotIn('access', r_good.data)
+        self.assertIn('message', r_good.data)
+
+        # Wrong password does not leak suspension status
+        r_bad = self.client.post('/api/auth/login/', {
+            'email': self.student.email,
+            'password': 'WrongPassword999!',
+        }, format='json')
+        self.assertEqual(r_bad.status_code, 400)
+        self.assertNotIn('access', r_bad.data)
+
+        # Suspended + unverified user with correct password must get 403, NOT unverified OTP dispatch
+        with patch('api.views._dispatch_otp_email') as mock_mail:
+            r_unv = self.client.post('/api/auth/login/', {
+                'email': self.unverified_student.email,
+                'password': 'Password123!',
+            }, format='json')
+        self.assertEqual(r_unv.status_code, 403)
+        self.assertNotEqual(r_unv.data.get('code'), 'unverified')
+        self.assertNotIn('access', r_unv.data)
+        mock_mail.assert_not_called()
+
+    def test_suspended_user_cannot_request_or_use_login_code(self):
+        # Seed a valid pre-suspension login code
+        User.objects.filter(pk=self.student.pk).update(
+            login_code_hash=hash_token('654321'),
+            login_code_expires=timezone.now() + timedelta(minutes=10),
+            is_active=False,
+        )
+
+        # Redeem pre-suspension login code -> rejected, no JWT
+        r_verify = self.client.post('/api/auth/login-code/verify/', {
+            'email': self.student.email,
+            'code': '654321',
+        }, format='json')
+        self.assertEqual(r_verify.status_code, 400)
+        self.assertNotIn('access', r_verify.data)
+
+        # Clear hash and confirm login-code request writes no new hash or email
+        User.objects.filter(pk=self.student.pk).update(login_code_hash='', login_code_expires=None)
+        with patch('api.views._dispatch_otp_email') as mock_mail:
+            r_req = self.client.post('/api/auth/login-code/request/', {
+                'email': self.student.email,
+            }, format='json')
+        self.assertEqual(r_req.status_code, 200)
+        self.student.refresh_from_db()
+        self.assertEqual(self.student.login_code_hash, '')
+        mock_mail.assert_not_called()
+
+    def test_suspended_user_cannot_reset_password_and_login(self):
+        # Suspends user before forgot-password -> no reset code created
+        User.objects.filter(pk=self.student.pk).update(is_active=False)
+        with patch('api.views._dispatch_otp_email') as mock_mail:
+            r_forgot = self.client.post('/api/auth/forgot-password/', {
+                'email': self.student.email,
+            }, format='json')
+        self.assertEqual(r_forgot.status_code, 200)
+        self.student.refresh_from_db()
+        self.assertEqual(self.student.reset_code_hash, '')
+        mock_mail.assert_not_called()
+
+        # Pre-seed valid reset code requested prior to suspension -> reset must still fail
+        User.objects.filter(pk=self.student.pk).update(
+            reset_code_hash=hash_token('112233'),
+            reset_code_expires=timezone.now() + timedelta(minutes=15),
+            is_active=False,
+        )
+        r_reset = self.client.post('/api/auth/reset-password/', {
+            'email': self.student.email,
+            'code': '112233',
+            'password': 'NewPassword123',
+        }, format='json')
+        self.assertEqual(r_reset.status_code, 400)
+        self.student.refresh_from_db()
+        self.assertFalse(self.student.check_password('NewPassword123'))
+        self.assertTrue(self.student.check_password('Password123!'))
+
+        # Neither old nor attempted new password allows login
+        for pw in ('Password123!', 'NewPassword123'):
+            r_login = self.client.post('/api/auth/login/', {
+                'email': self.student.email,
+                'password': pw,
+            }, format='json')
+            self.assertIn(r_login.status_code, (400, 403))
+            self.assertNotIn('access', r_login.data)
+
+        # Suspended unverified user cannot verify email, resend code, or overwrite via register
+        User.objects.filter(pk=self.unverified_student.pk).update(
+            verification_code_hash=hash_token('445566'),
+            verification_code_expires=timezone.now() + timedelta(minutes=15),
+            is_active=False,
+        )
+        r_ve = self.client.post('/api/auth/verify-email/', {
+            'email': self.unverified_student.email,
+            'code': '445566',
+        }, format='json')
+        self.assertEqual(r_ve.status_code, 400)
+        self.assertNotIn('access', r_ve.data)
+        self.unverified_student.refresh_from_db()
+        self.assertFalse(self.unverified_student.verified)
+
+        with patch('api.views._dispatch_otp_email') as mock_mail:
+            r_rs = self.client.post('/api/auth/resend-code/', {
+                'email': self.unverified_student.email,
+            }, format='json')
+            self.assertEqual(r_rs.status_code, 200)
+        mock_mail.assert_not_called()
+
+        r_reg = self.client.post('/api/auth/register/', {
+            'fullName': 'Takeover Try',
+            'email': self.unverified_student.email,
+            'referenceId': '20950099',
+            'phone': '0249500099',
+            'accountType': 'customer',
+            'password': 'NewPassword123',
+        }, format='json')
+        self.assertEqual(r_reg.status_code, 400)
+
+    def test_pre_suspension_token_rejected_on_all_authenticated_endpoints(self):
+        from types import SimpleNamespace
+        from django.contrib import admin
+        import stew_server.urls  # noqa: F401
+        from api.authentication import IsAdminUser
+
+        student_tok = generate_jwt_token(self.student)
+        vendor_tok = generate_jwt_token(self.vendor_user)
+        inact_vendor_tok = generate_jwt_token(self.inactive_vendor_user)
+        admin_tok = generate_jwt_token(self.admin_user)
+        active_admin_tok = generate_jwt_token(self.active_admin)
+
+        # Pre-suspension sanity checks pass
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {student_tok}')
+        self.assertEqual(self.client.get('/api/auth/me/').status_code, 200)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {vendor_tok}')
+        self.assertEqual(self.client.get('/api/payouts/').status_code, 200)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {inact_vendor_tok}')
+        self.assertEqual(self.client.get(f'/api/vendors/{self.inactive_vendor.id}/').status_code, 200)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {admin_tok}')
+        self.assertEqual(self.client.get('/api/admin/users/').status_code, 200)
+
+        # Seed pending OTP hashes on student and suspend via admin API -> hashes must be cleared
+        User.objects.filter(pk=self.student.pk).update(
+            verification_code_hash=hash_token('111111'),
+            verification_code_expires=timezone.now() + timedelta(minutes=10),
+            login_code_hash=hash_token('222222'),
+            login_code_expires=timezone.now() + timedelta(minutes=10),
+            reset_code_hash=hash_token('333333'),
+            reset_code_expires=timezone.now() + timedelta(minutes=10),
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {active_admin_tok}')
+        r_susp = self.client.patch(f'/api/admin/users/{self.student.id}/', {'active': False}, format='json')
+        self.assertEqual(r_susp.status_code, 200)
+        self.student.refresh_from_db()
+        self.assertFalse(self.student.is_active)
+        self.assertEqual(self.student.verification_code_hash, '')
+        self.assertEqual(self.student.login_code_hash, '')
+        self.assertEqual(self.student.reset_code_hash, '')
+
+        # Also suspend vendor, inactive vendor owner, and admin (simulating shell deactivation)
+        User.objects.filter(pk__in=[self.vendor_user.pk, self.inactive_vendor_user.pk, self.admin_user.pk]).update(
+            is_active=False
+        )
+
+        # Student token blocked across all student-authenticated endpoints
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {student_tok}')
+        for method, path, payload in [
+            ('get', '/api/auth/me/', None),
+            ('patch', '/api/auth/me/', {'fullName': 'Still Suspended'}),
+            ('post', '/api/auth/logout/', {}),
+            ('delete', '/api/auth/delete-account/', None),
+            ('get', '/api/orders/', None),
+            ('post', '/api/orders/', {'lines': [{'mealId': self.meal.id, 'qty': 1}], 'area': 'Campus', 'pickupDay': '2026-12-01'}),
+            ('get', '/api/support/cases/', None),
+            ('post', '/api/notifications/subscribe/', {'endpoint': 'https://push.example.com/sub1', 'keys': {}}),
+        ]:
+            resp = getattr(self.client, method)(path, payload, format='json')
+            self.assertEqual(resp.status_code, 401, f'Expected 401 for student {method.upper()} {path}, got {resp.status_code}')
+
+        # Vendor token blocked across all vendor-authenticated endpoints
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {vendor_tok}')
+        for method, path, payload in [
+            ('get', '/api/meals/?mine=true', None),
+            ('post', '/api/meals/', {'name': 'Ghost Dish', 'price': 20, 'stock': 5}),
+            ('get', '/api/payouts/', None),
+            ('get', '/api/vendor/compliance/', None),
+            ('post', '/api/vendor/apply/', {'kitchen': 'Reopened Kitchen', 'hall': 'Republic Hall'}),
+            ('post', '/api/vendor/activate/', {}),
+        ]:
+            resp = getattr(self.client, method)(path, payload, format='json')
+            self.assertEqual(resp.status_code, 401, f'Expected 401 for vendor {method.upper()} {path}, got {resp.status_code}')
+
+        # Suspended owner of inactive vendor is rejected (401) with token, and unauthenticated gets 404
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {inact_vendor_tok}')
+        self.assertEqual(self.client.get(f'/api/vendors/{self.inactive_vendor.id}/').status_code, 401)
+        self.client.credentials()
+        self.assertEqual(self.client.get(f'/api/vendors/{self.inactive_vendor.id}/').status_code, 404)
+
+        # Admin token blocked across all admin-authenticated endpoints
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {admin_tok}')
+        for method, path in [
+            ('get', '/api/admin/users/'),
+            ('get', '/api/admin/vendors/'),
+            ('get', '/api/admin/audit/'),
+            ('get', '/api/payouts/batches/'),
+            ('get', '/api/admin/reviews/queue/'),
+        ]:
+            resp = getattr(self.client, method)(path)
+            self.assertEqual(resp.status_code, 401, f'Expected 401 for admin {method.upper()} {path}, got {resp.status_code}')
+
+        # Suspended admin token on vendor_reviews_view?includeHidden=true is rejected (401),
+        # and anonymous ?includeHidden=true never exposes hidden reviews.
+        r_rev = self.client.get(f'/api/vendors/{self.vendor.id}/reviews/?includeHidden=true')
+        self.assertEqual(r_rev.status_code, 401)
+        self.client.credentials()
+        r_rev_anon = self.client.get(f'/api/vendors/{self.vendor.id}/reviews/?includeHidden=true')
+        self.assertEqual(r_rev_anon.status_code, 200)
+        self.assertNotIn(self.hidden_order.id, [rev['orderId'] for rev in r_rev_anon.data])
+
+        # Defense-in-depth permission & Django admin checks fail for inactive admin
+        self.admin_user.refresh_from_db()
+        fake_req = SimpleNamespace(user=self.admin_user)
+        self.assertFalse(IsAdminUser().has_permission(fake_req, None))
+        self.assertFalse(admin.site.has_permission(fake_req))
+
+
+
