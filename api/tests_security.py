@@ -2329,3 +2329,129 @@ class ProxyClientIpAndCampusNatRateLimitTests(TestCase):
         self.assertEqual(r_lock.status_code, 429)
         target.refresh_from_db()
         self.assertEqual(target.verification_code_hash, '')
+
+
+class RateLimitBucketCleanupAndScaleTests(TestCase):
+    """
+    REL-03: RateLimitBucket must bound key lengths safely without breaking prefixes,
+    purge expired rate-limit and revocation buckets in batches via
+    `manage.py cleanup_rate_limits`, preserve active revocations within the
+    configured JWT lifetime, and sustain fast PK lookups at 100k rows.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='bucket.student@st.knust.edu.gh', password='Password123',
+            full_name='Bucket Student', reference_id='20893001', phone='0249300001',
+            hall='Unity Hall', verified=True,
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_cleanup_rate_limits_removes_stale_keeps_fresh_and_bounds_keys(self):
+        from django.core.management import call_command
+        from api.models import RateLimitBucket
+        from api.security import check_rate_limit, is_jwt_revoked, revoke_jwt_token
+
+        now = timezone.now()
+
+        # Long keys (> 255 chars) must be hashed deterministically with preserved prefixes
+        long_rl_key = 'rl_' + ('x' * 400)
+        self.assertTrue(check_rate_limit(long_rl_key, limit=2, window_seconds=60))
+        rl_row = RateLimitBucket.objects.get()
+        self.assertLessEqual(len(rl_row.key), 255)
+        self.assertTrue(rl_row.key.startswith('rl_sha256_'))
+
+        long_jti_payload = {'jti': 'j_' + ('y' * 400)}
+        revoke_jwt_token('dummy-tok', payload=long_jti_payload)
+        self.assertTrue(is_jwt_revoked('dummy-tok', payload=long_jti_payload))
+        self.assertEqual(RateLimitBucket.objects.filter(key__startswith='jwt_revoked_').count(), 1)
+        RateLimitBucket.objects.all().delete()
+
+        # Seed stale + fresh rate-limit rows
+        for i in range(30):
+            RateLimitBucket.objects.create(key=f'stale_rl_{i}', count=1, window_start=now - timedelta(hours=3))
+        RateLimitBucket.objects.create(key='fresh_rl', count=1, window_start=now - timedelta(minutes=20))
+
+        # Revoke a valid token and create one stale revocation row older than lifetime + margin
+        revoked_tok = generate_jwt_token(self.student)
+        revoke_jwt_token(revoked_tok)
+        RateLimitBucket.objects.create(
+            key='jwt_revoked_expired_old_jti',
+            count=1,
+            window_start=now - timedelta(hours=20),
+        )
+
+        # Also create an expired JWT that was revoked long ago
+        import jwt as pyjwt
+        old_now = now - timedelta(hours=20)
+        expired_tok = pyjwt.encode(
+            {
+                'sub': str(self.student.id),
+                'jti': 'expired_jti_for_cleanup',
+                'role': self.student.role,
+                'iss': 'stew',
+                'iat': int(old_now.timestamp()),
+                'exp': int((old_now + timedelta(hours=1)).timestamp()),
+            },
+            settings.SECRET_KEY,
+            algorithm='HS256',
+        )
+        RateLimitBucket.objects.create(
+            key='jwt_revoked_expired_jti_for_cleanup',
+            count=1,
+            window_start=old_now,
+        )
+
+        with override_settings(JWT_ACCESS_TOKEN_LIFETIME_HOURS=12):
+            call_command('cleanup_rate_limits', batch_size=10, margin_seconds=3600)
+
+        self.assertEqual(RateLimitBucket.objects.filter(key__startswith='stale_rl_').count(), 0)
+        self.assertTrue(RateLimitBucket.objects.filter(key='fresh_rl').exists())
+        self.assertFalse(RateLimitBucket.objects.filter(key='jwt_revoked_expired_old_jti').exists())
+        self.assertFalse(RateLimitBucket.objects.filter(key='jwt_revoked_expired_jti_for_cleanup').exists())
+
+        # Active revoked token MUST stay in DB and MUST still be rejected with 401
+        self.assertTrue(is_jwt_revoked(revoked_tok))
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {revoked_tok}')
+        self.assertEqual(self.client.get('/api/auth/me/').status_code, 401)
+
+        # Expired token whose revocation row was cleaned is STILL rejected via exp
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {expired_tok}')
+        self.assertEqual(self.client.get('/api/auth/me/').status_code, 401)
+
+    def test_100k_rows_is_jwt_revoked_lookup_and_batched_cleanup_performance(self):
+        import time
+        from django.core.management import call_command
+        from api.models import RateLimitBucket
+        from api.security import is_jwt_revoked, revoke_jwt_token
+
+        stale_ts = timezone.now() - timedelta(hours=5)
+        for offset in range(0, 100_000, 10_000):
+            RateLimitBucket.objects.bulk_create(
+                [
+                    RateLimitBucket(key=f'perf_rl_{offset + j}', count=1, window_start=stale_ts)
+                    for j in range(10_000)
+                ],
+                batch_size=5_000,
+            )
+
+        revoked_tok = generate_jwt_token(self.student)
+        fresh_tok = generate_jwt_token(self.student)
+        revoke_jwt_token(revoked_tok)
+
+        t0 = time.perf_counter()
+        rev_hit = is_jwt_revoked(revoked_tok)
+        rev_miss = is_jwt_revoked(fresh_tok)
+        elapsed = time.perf_counter() - t0
+
+        self.assertTrue(rev_hit)
+        self.assertFalse(rev_miss)
+        self.assertLess(elapsed, 0.1, f'is_jwt_revoked took {elapsed:.4f}s at 100k rows')
+
+        call_command('cleanup_rate_limits', batch_size=10_000, margin_seconds=3600)
+        self.assertEqual(RateLimitBucket.objects.filter(key__startswith='perf_rl_').count(), 0)
+        self.assertTrue(is_jwt_revoked(revoked_tok))

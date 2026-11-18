@@ -114,12 +114,18 @@ def decode_jwt_token(token: str) -> dict:
 
 
 def _revoked_jwt_key(token: str, payload: dict | None = None) -> str:
-    jti = (payload or {}).get('jti')
-    if jti:
-        raw = f"jwt_revoked_{jti}"
-    else:
-        raw = f"jwt_revoked_{hashlib.sha256(str(token).encode('utf-8')).hexdigest()}"
-    return raw if len(raw) <= 255 else hashlib.sha256(raw.encode('utf-8')).hexdigest()
+    jti = str((payload or {}).get('jti') or '').strip()
+    if jti and len(f"jwt_revoked_{jti}") <= 255:
+        return f"jwt_revoked_{jti}"
+    digest = hashlib.sha256((jti or str(token)).encode('utf-8')).hexdigest()
+    return f"jwt_revoked_{digest}"
+
+
+def _normalize_rate_limit_key(key: str) -> str:
+    raw = str(key or '')
+    if 0 < len(raw) <= 200 and not raw.startswith('jwt_revoked_'):
+        return raw
+    return f"rl_sha256_{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
 def revoke_jwt_token(token: str, payload: dict | None = None) -> None:
@@ -132,7 +138,7 @@ def revoke_jwt_token(token: str, payload: dict | None = None) -> None:
     if payload is None:
         try:
             payload = decode_jwt_token(token)
-        except Exception:
+        except AuthenticationFailed:
             payload = {}
     RateLimitBucket.objects.update_or_create(
         key=_revoked_jwt_key(token, payload),
@@ -144,6 +150,13 @@ def is_jwt_revoked(token: str, payload: dict | None = None) -> bool:
     """Returns True if the JWT access token has been explicitly revoked."""
     from api.models import RateLimitBucket
 
+    if not token and not payload:
+        return False
+    if payload is None and token:
+        try:
+            payload = decode_jwt_token(token)
+        except AuthenticationFailed:
+            payload = {}
     return RateLimitBucket.objects.filter(key=_revoked_jwt_key(token, payload)).exists()
 
 
@@ -173,7 +186,7 @@ def check_rate_limit(key: str, limit: int = 5, window_seconds: int = 60) -> bool
     from django.utils import timezone as dj_timezone
     from api.models import RateLimitBucket
 
-    bucket_key = key if len(key) <= 255 else hashlib.sha256(key.encode('utf-8')).hexdigest()
+    bucket_key = _normalize_rate_limit_key(key)
     now = dj_timezone.now()
     window = timedelta(seconds=window_seconds)
 

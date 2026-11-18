@@ -339,3 +339,17 @@ All security-critical rate limits (OTP verification, login code, password reset,
 | Direct Gunicorn or reverse proxy rewrites `REMOTE_ADDR` (e.g. nginx with `set_real_ip_from` / UNIX socket only) | **`0`** *(default)* | Ignores `X-Forwarded-For` completely so spoofed headers have zero effect. |
 | Single managed reverse proxy / PaaS LB in front of Gunicorn (Render, Railway, Fly.io, DigitalOcean App Platform, AWS ALB, single nginx/Caddy) | **`1`** | Reads the right-most hop of `X-Forwarded-For` appended by your trusted edge/LB. Ensure Gunicorn is NOT directly reachable from the public internet bypassing the LB. |
 | CDN / WAF (e.g. Cloudflare) **in front of** your own nginx / AWS ALB | **`2`** | Counts Cloudflare + your LB from the right (`parts[-2]`). Lock nginx/ALB firewall to Cloudflare IPs so clients cannot inject hops before the LB. |
+
+---
+
+## 8. Scheduled `RateLimitBucket` Cleanup (`cleanup_rate_limits`)
+
+`api_ratelimitbucket` stores both sliding-window rate-limit counters (max window `3600s`) and logout JWT revocations (`jwt_revoked_*`, lifetime read from `JWT_ACCESS_TOKEN_LIFETIME_HOURS`, default `12h`). Run `cleanup_rate_limits` daily (or hourly on high-traffic hosts) so the table stays bounded without ever purging an active token's revocation before it expires:
+
+```bash
+# Run once daily at 03:15 UTC via cron, systemd timer, or platform scheduled job
+15 3 * * * cd /app/stew_backend && /app/venv/bin/python manage.py cleanup_rate_limits --batch-size 1000 --margin-seconds 3600 >> /var/log/stew-cleanup.log 2>&1
+```
+
+- Deletions execute in `1,000`-row PK batches (`order_by('key')[:batch_size]`) so PostgreSQL autovacuum/MVCC stays smooth with zero long table locks.
+- Rate-limit counters older than `3600s + margin_seconds` (`2h`) and revocation rows older than `JWT_ACCESS_TOKEN_LIFETIME_HOURS + margin_seconds` (`13h` at default `12h`) are purged.
