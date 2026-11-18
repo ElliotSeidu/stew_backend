@@ -2635,3 +2635,180 @@ class EscrowReleaseGuardTests(TestCase):
         self.assertEqual(o_canc.payment_status, 'cancelled')
         self.assertIsNone(o_canc.collected_at)
         self.assertEqual(o_rels.collected_via, 'student_confirmed')
+
+
+from rest_framework.test import APIClient
+from django.test import TestCase as _DjangoTestCase
+
+
+class SupportCaseAuditSnapshotTests(_DjangoTestCase):
+    """WP6: Support case resolution must persist a full AuditEntry snapshot before deleting the row."""
+
+    def test_refund_and_dismiss_write_full_snapshot_audit_before_delete_and_block_double_resolve(self):
+        from datetime import datetime
+        from decimal import Decimal
+        from api.models import AuditEntry, Order, PayoutBatch, SupportCase, User, Vendor
+        from api.security import generate_jwt_token
+
+        client = APIClient()
+
+        admin = User.objects.create_user(
+            email='sc_admin@st.knust.edu.gh',
+            password='Password123!',
+            role='admin',
+            verified=True,
+            is_admin=True,
+        )
+        cust = User.objects.create_user(
+            email='sc_cust@st.knust.edu.gh',
+            password='Password123!',
+            role='student',
+            verified=True,
+        )
+        v_user = User.objects.create_user(
+            email='sc_vend@st.knust.edu.gh',
+            password='Password123!',
+            role='vendor',
+            verified=True,
+        )
+        vendor = Vendor.objects.create(
+            id='vend-sc-1',
+            user=v_user,
+            name='SC Kitchen',
+            active=True,
+            open=True,
+        )
+
+        paid_order = Order.objects.create(
+            id='ord-sc-paid',
+            customer=cust,
+            vendor=vendor,
+            vendor_name=vendor.name,
+            email=cust.email,
+            lines=[{'mealId': 'm-sc-1', 'name': 'Waakye', 'price': 40.0, 'qty': 1}],
+            subtotal=Decimal('40.00'),
+            fee=Decimal('2.00'),
+            total=Decimal('42.00'),
+            payment_status='paid',
+            prep_stage='queued',
+        )
+        refund_case = SupportCase.objects.create(
+            code='CASE-SC-REF1',
+            user=cust,
+            type='missing_item',
+            order=paid_order.id,
+            vendor=vendor.name,
+            priority='high',
+            note='Missing plantain from waakye pack',
+        )
+
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(admin)}')
+
+        # 1. Resolve with refund -> AuditEntry snapshot persisted, SupportCase deleted
+        res_ref = client.post(f'/api/support/cases/{refund_case.code}/resolve/', {'action': 'refund'}, format='json')
+        self.assertEqual(res_ref.status_code, 200)
+        self.assertFalse(SupportCase.objects.filter(code=refund_case.code).exists())
+
+        paid_order.refresh_from_db()
+        self.assertEqual(paid_order.payment_status, 'refunded')
+        self.assertIsNotNone(paid_order.cancelled_at)
+
+        audit_ref = AuditEntry.objects.filter(entity_type='support_case', entity_id=refund_case.code).first()
+        self.assertIsNotNone(audit_ref)
+        self.assertEqual(audit_ref.actor, admin.email)
+        self.assertEqual(audit_ref.action, 'case_refund')
+        extra = audit_ref.extra or {}
+        self.assertEqual(extra.get('code'), refund_case.code)
+        self.assertEqual(extra.get('caseCode'), refund_case.code)
+        self.assertEqual(extra.get('order'), paid_order.id)
+        self.assertEqual(extra.get('orderId'), paid_order.id)
+        self.assertEqual(extra.get('customer'), cust.email)
+        self.assertEqual(extra.get('vendor'), vendor.name)
+        self.assertEqual(extra.get('description'), refund_case.note)
+        self.assertEqual(extra.get('decision'), 'refund')
+        self.assertEqual(extra.get('refundAmount'), '42.00')
+        self.assertEqual(extra.get('refund_amount'), '42.00')
+        self.assertEqual(extra.get('actor'), admin.email)
+        self.assertTrue(extra.get('timestamp'))
+        datetime.fromisoformat(extra['timestamp'])
+
+        # Double-resolve returns 404
+        res_ref_again = client.post(f'/api/support/cases/{refund_case.code}/resolve/', {'action': 'refund'}, format='json')
+        self.assertEqual(res_ref_again.status_code, 404)
+
+        # 2. Dismiss a second case (with case.user=None, falling back to Order.email for customer)
+        other_order = Order.objects.create(
+            id='ord-sc-other',
+            customer=cust,
+            vendor=vendor,
+            vendor_name=vendor.name,
+            email=cust.email,
+            lines=[{'mealId': 'm-sc-2', 'name': 'Jollof', 'price': 20.0, 'qty': 1}],
+            subtotal=Decimal('20.00'),
+            fee=Decimal('1.00'),
+            total=Decimal('21.00'),
+            payment_status='paid',
+            prep_stage='queued',
+        )
+        dismiss_case = SupportCase.objects.create(
+            code='CASE-SC-DIS1',
+            user=None,
+            type='late_delivery',
+            order=other_order.id,
+            vendor=vendor.name,
+            priority='normal',
+            note='Arrived 10 mins after break',
+        )
+        res_dis = client.post(f'/api/support/cases/{dismiss_case.code}/resolve/', {'action': 'dismiss'}, format='json')
+        self.assertEqual(res_dis.status_code, 200)
+        self.assertFalse(SupportCase.objects.filter(code=dismiss_case.code).exists())
+
+        audit_dis = AuditEntry.objects.filter(entity_type='support_case', entity_id=dismiss_case.code).first()
+        self.assertIsNotNone(audit_dis)
+        self.assertEqual(audit_dis.action, 'case_dismiss')
+        dis_extra = audit_dis.extra or {}
+        self.assertEqual(dis_extra.get('decision'), 'dismiss')
+        self.assertEqual(dis_extra.get('refundAmount'), '0.00')
+        self.assertEqual(dis_extra.get('refund_amount'), '0.00')
+        self.assertEqual(dis_extra.get('customer'), cust.email)
+        self.assertEqual(dis_extra.get('description'), dismiss_case.note)
+        self.assertEqual(dis_extra.get('order'), other_order.id)
+        self.assertEqual(dis_extra.get('vendor'), vendor.name)
+
+        res_dis_again = client.post(f'/api/support/cases/{dismiss_case.code}/resolve/', {'action': 'dismiss'}, format='json')
+        self.assertEqual(res_dis_again.status_code, 404)
+
+        # 3. Order already in a PayoutBatch still returns 409 and does NOT delete case
+        batch = PayoutBatch.objects.create(
+            id='batch-sc-1',
+            amount=Decimal('40.00'),
+            order_count=1,
+            status='paid',
+        )
+        batched_order = Order.objects.create(
+            id='ord-sc-batched',
+            customer=cust,
+            vendor=vendor,
+            vendor_name=vendor.name,
+            email=cust.email,
+            lines=[{'mealId': 'm-sc-1', 'name': 'Waakye', 'price': 40.0, 'qty': 1}],
+            subtotal=Decimal('40.00'),
+            fee=Decimal('2.00'),
+            total=Decimal('42.00'),
+            payment_status='released',
+            settlement_status='released',
+            payout_batch_id=batch.id,
+        )
+        batched_case = SupportCase.objects.create(
+            code='CASE-SC-BAT1',
+            user=cust,
+            type='quality',
+            order=batched_order.id,
+            vendor=vendor.name,
+            priority='normal',
+            note='Portion felt small',
+        )
+        res_bat = client.post(f'/api/support/cases/{batched_case.code}/resolve/', {'action': 'refund'}, format='json')
+        self.assertEqual(res_bat.status_code, 409)
+        self.assertTrue(SupportCase.objects.filter(code=batched_case.code).exists())
+

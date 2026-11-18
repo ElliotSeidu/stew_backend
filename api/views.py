@@ -2306,11 +2306,14 @@ def support_case_resolve_view(request, code):
         return Response({'message': 'Invalid resolution action.'}, status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
+        now = dj_timezone.now()
         try:
             case = SupportCase.objects.select_for_update().get(code=code)
         except SupportCase.DoesNotExist:
             return Response({'message': 'Support case not found.'}, status=status.HTTP_404_NOT_FOUND)
 
+        order = None
+        refund_amount = Decimal('0.00')
         if action == 'refund' and case.order:
             order = Order.objects.select_for_update().filter(id=case.order).first()
             if order and order.payout_batch_id:
@@ -2320,7 +2323,6 @@ def support_case_resolve_view(request, code):
                 )
             if order and not order.cancelled_at:
                 was_uncollected = not order.collected_at and order.prep_stage != 'collected'
-                now = dj_timezone.now()
                 order.cancelled_at = now
                 was_paid = order.payment_status in ('paid', 'released')
                 if was_paid and order.settlement_status == 'released':
@@ -2332,9 +2334,46 @@ def support_case_resolve_view(request, code):
                 order.save(update_fields=['cancelled_at', 'payment_status'])
                 if was_uncollected:
                     _restore_order_stock(order)
+                if was_paid:
+                    refund_amount = Decimal(str(order.total)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
                 record_audit(request.user.email, 'case_refund_order_cancelled', 'order', order.id, {'case': case.code})
+            elif order and order.payment_status in ('paid', 'released', 'refunded', 'refund_pending'):
+                refund_amount = Decimal(str(order.total)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        elif case.order:
+            order = Order.objects.filter(id=case.order).only('email', 'vendor_name', 'customer_id').first()
 
-        record_audit(request.user.email, f'case_{action}', 'support_case', case.code, {'order': case.order, 'vendor': case.vendor})
+        customer_email = (case.user.email if case.user_id and case.user else (order.email if order else '')) or ''
+        customer_id = str(case.user_id) if case.user_id else (str(order.customer_id) if order and order.customer_id else None)
+        vendor_name = case.vendor or (order.vendor_name if order else '') or ''
+        refund_str = f'{refund_amount:.2f}'
+        snapshot = {
+            'code': case.code,
+            'caseCode': case.code,
+            'order': case.order or '',
+            'orderId': case.order or '',
+            'customer': customer_email,
+            'customerId': customer_id,
+            'vendor': vendor_name,
+            'type': case.type or '',
+            'priority': case.priority or '',
+            'description': case.note or '',
+            'note': case.note or '',
+            'decision': action,
+            'action': action,
+            'refundAmount': refund_str,
+            'refund_amount': refund_str,
+            'actor': request.user.email,
+            'timestamp': now.isoformat(),
+        }
+        # Persist the full snapshot directly inside the atomic block before deleting the case row.
+        AuditEntry.objects.create(
+            id=f"AUD-{int(now.timestamp() * 1000)}-{secrets.token_hex(4)}",
+            actor=str(request.user.email)[:150],
+            action=f'case_{action}'[:100],
+            entity_type='support_case',
+            entity_id=str(case.code)[:64],
+            extra=snapshot,
+        )
         case.delete()
     return Response({'ok': True, 'code': code, 'action': action})
 
