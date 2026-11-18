@@ -332,13 +332,29 @@ for o in odd_orders[:50]:
 
 ## 7. Reverse Proxy (`TRUSTED_PROXY_COUNT`) & Campus NAT Rate Limits
 
-All security-critical rate limits (OTP verification, login code, password reset, payment initiation, handoff completion, order creation) are keyed per email, user, or order in PostgreSQL `RateLimitBucket`. The remaining IP-keyed flood guards (`register_view`, `forgot_password_view`, `reset_password_view`, `check_reference_view`, `analytics_event_view`, and DRF `AnonRateThrottle`) extract the client IP using `TRUSTED_PROXY_COUNT` (right-to-left parsing of `X-Forwarded-For`, never trusting the left-most header value) and allow campus-NAT ceilings (`100/hour` on registration/reset, `120/min` on reference-check/analytics, `300/min` DRF `anon`).
+All security-critical rate limits (OTP verification, login code, password reset, payment initiation, handoff completion, order creation) are keyed per email, user, or order in PostgreSQL `RateLimitBucket`. The remaining IP-keyed flood guards (`register_view`, `forgot_password_view`, `reset_password_view`, `check_reference_view`, `analytics_event_view`, and DRF `AnonRateThrottle`) extract the client IP using `TRUSTED_PROXY_COUNT` (right-to-left parsing of `X-Forwarded-For`, never trusting the left-most header value) and allow campus-NAT ceilings (`100/hour` on registration/reset, `120/min` on reference-check/analytics, `1000/min` DRF `anon` via `THROTTLE_ANON_PER_MIN`, and `120/min` DRF `user` via `THROTTLE_USER_PER_MIN`).
 
 | Hosting Topology | Required `TRUSTED_PROXY_COUNT` | Reverse Proxy Notes |
 |---|---|---|
 | Direct Gunicorn or reverse proxy rewrites `REMOTE_ADDR` (e.g. nginx with `set_real_ip_from` / UNIX socket only) | **`0`** *(default)* | Ignores `X-Forwarded-For` completely so spoofed headers have zero effect. |
 | Single managed reverse proxy / PaaS LB in front of Gunicorn (Render, Railway, Fly.io, DigitalOcean App Platform, AWS ALB, single nginx/Caddy) | **`1`** | Reads the right-most hop of `X-Forwarded-For` appended by your trusted edge/LB. Ensure Gunicorn is NOT directly reachable from the public internet bypassing the LB. |
 | CDN / WAF (e.g. Cloudflare) **in front of** your own nginx / AWS ALB | **`2`** | Counts Cloudflare + your LB from the right (`parts[-2]`). Lock nginx/ALB firewall to Cloudflare IPs so clients cannot inject hops before the LB. |
+
+### Staging Verification: Confirming `TRUSTED_PROXY_COUNT` (Two-Device `429` Check)
+
+Before cutover, verify `TRUSTED_PROXY_COUNT` live on staging with two client devices on different networks so shared proxy IPs can never cause campus-wide lockouts or spoofable rate-limit bypasses:
+
+1. **Lower the staging anonymous throttle temporarily** (requires no code edit): set `THROTTLE_ANON_PER_MIN=10` alongside your candidate `TRUSTED_PROXY_COUNT`, and restart staging Gunicorn.
+2. **Pick two devices on different networks**: Device A on campus/office Wi-Fi and Device B on a mobile hotspot (confirm different public exit IPs, e.g. via `curl https://api.ipify.org`).
+3. **Trigger `429` from Device A**: send `12` consecutive anonymous `GET /api/vendors/` requests within one minute:
+   - Requests `1..10` must return `200`; requests `11+` must return `429 Too Many Requests`.
+4. **Verify Device B is unaffected within the same minute**: immediately send `GET /api/vendors/` from Device B:
+   - **`200 OK` (PASS)**: `TRUSTED_PROXY_COUNT` isolates real client IPs per hop (`Device A` throttled independently of `Device B`).
+   - **`429 Too Many Requests` (FAIL)**: `TRUSTED_PROXY_COUNT` is wrong (e.g. `0` behind a proxy, causing all requests to collapse onto the proxy's `REMOTE_ADDR`, or pointing at an internal LB hop). Adjust `TRUSTED_PROXY_COUNT` and retest.
+5. **Verify `X-Forwarded-For` spoofing fails**: while Device A is still returning `429`, send `curl -i -H "X-Forwarded-For: 203.0.113.77" https://<staging-api>/api/vendors/` from Device A:
+   - **`429` (PASS)**: spoofed left-most IP was ignored.
+   - **`200` (FAIL)**: `TRUSTED_PROXY_COUNT` is higher than your real proxy chain or the proxy is trusting client-supplied headers without appending cleanly. Fix proxy config / count and retest.
+6. **Restore normal rate**: set `THROTTLE_ANON_PER_MIN=1000` (or remove the temporary override), restart staging Gunicorn, and confirm normal traffic succeeds.
 
 ---
 

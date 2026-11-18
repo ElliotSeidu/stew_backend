@@ -5,6 +5,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 import jwt
 
 
@@ -222,3 +223,28 @@ def check_rate_limit(key: str, limit: int = 5, window_seconds: int = 60) -> bool
         bucket.save(update_fields=['count', 'updated_at'])
         _RATE_LIMIT_CACHE.setdefault(bucket_key, []).append(now.timestamp())
         return True
+
+
+class ConfigurableAnonRateThrottle(AnonRateThrottle):
+    """DRF AnonRateThrottle reading settings.THROTTLE_ANON_PER_MIN dynamically."""
+
+    def get_rate(self):
+        val = getattr(settings, 'THROTTLE_ANON_PER_MIN', None)
+        if val is not None:
+            return f"{max(1, int(val))}/min"
+        return super().get_rate()
+
+
+class ConfigurableUserRateThrottle(UserRateThrottle):
+    """DRF UserRateThrottle reading settings.THROTTLE_USER_PER_MIN dynamically for authenticated users only."""
+
+    def get_cache_key(self, request, view):
+        if not (request.user and request.user.is_authenticated):
+            return None
+        return super().get_cache_key(request, view)
+
+    def get_rate(self):
+        val = getattr(settings, 'THROTTLE_USER_PER_MIN', None)
+        if val is not None:
+            return f"{max(1, int(val))}/min"
+        return super().get_rate()

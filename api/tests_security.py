@@ -3300,4 +3300,65 @@ class SuspendedUserAuthSecurityTests(TestCase):
         self.assertFalse(admin.site.has_permission(fake_req))
 
 
+class ConfigurableThrottleRateTests(TestCase):
+    """
+    RC1-02: DRF anon and user throttle rates must be configurable via
+    THROTTLE_ANON_PER_MIN (default 1000) and THROTTLE_USER_PER_MIN (default 120),
+    allow >300 anonymous requests/min from one shared NAT IP at default, and
+    enforce lowered limits dynamically.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def tearDown(self):
+        from django.core.cache import cache
+        cache.clear()
+        _RATE_LIMIT_CACHE.clear()
+
+    def test_default_anon_throttle_allows_more_than_300_requests_per_min_from_one_ip(self):
+        self.assertEqual(settings.THROTTLE_ANON_PER_MIN, 1000)
+        self.assertEqual(settings.THROTTLE_USER_PER_MIN, 120)
+        self.assertEqual(settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['anon'], '1000/min')
+        self.assertEqual(settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['user'], '120/min')
+
+        for idx in range(305):
+            r = self.client.get('/api/vendors/', REMOTE_ADDR='196.201.88.10')
+            self.assertEqual(r.status_code, 200, f'Request #{idx + 1} was unexpectedly throttled ({r.status_code})')
+
+    def test_lowered_anon_and_user_throttle_settings_trigger_429(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        with override_settings(THROTTLE_ANON_PER_MIN=5):
+            for idx in range(5):
+                r = self.client.get('/api/vendors/', REMOTE_ADDR='196.201.88.11')
+                self.assertEqual(r.status_code, 200, f'Anon request #{idx + 1} failed: {r.status_code}')
+            r_blocked = self.client.get('/api/vendors/', REMOTE_ADDR='196.201.88.11')
+            self.assertEqual(r_blocked.status_code, 429)
+
+        cache.clear()
+        student = User.objects.create_user(
+            email='throttle.student@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Throttle Student',
+            reference_id='20951001',
+            phone='0249510001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+        )
+        tok = generate_jwt_token(student)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {tok}')
+        with override_settings(THROTTLE_USER_PER_MIN=3):
+            for idx in range(3):
+                r = self.client.get('/api/auth/me/', REMOTE_ADDR='196.201.88.12')
+                self.assertEqual(r.status_code, 200, f'User request #{idx + 1} failed: {r.status_code}')
+            r_user_blocked = self.client.get('/api/auth/me/', REMOTE_ADDR='196.201.88.12')
+            self.assertEqual(r_user_blocked.status_code, 429)
+
+
+
 

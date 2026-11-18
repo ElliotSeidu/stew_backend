@@ -160,6 +160,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # N > 0: take the Nth IP from the RIGHT of X-Forwarded-For (trusted proxies).
 # ---------------------------------------------------------------------------
 TRUSTED_PROXY_COUNT = max(0, int(os.getenv('TRUSTED_PROXY_COUNT', '0')))
+THROTTLE_ANON_PER_MIN = max(1, int(os.getenv('THROTTLE_ANON_PER_MIN', '1000')))
+THROTTLE_USER_PER_MIN = max(1, int(os.getenv('THROTTLE_USER_PER_MIN', '120')))
 
 # ---------------------------------------------------------------------------
 # Django REST Framework
@@ -174,12 +176,12 @@ REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'api.exceptions.custom_exception_handler',
     # Global DRF throttling as a safety net; per-view rate limiting is in security.py
     'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
+        'api.security.ConfigurableAnonRateThrottle',
+        'api.security.ConfigurableUserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '300/min',
-        'user': '120/min',
+        'anon': f'{THROTTLE_ANON_PER_MIN}/min',
+        'user': f'{THROTTLE_USER_PER_MIN}/min',
     },
     'NUM_PROXIES': TRUSTED_PROXY_COUNT,
 }
