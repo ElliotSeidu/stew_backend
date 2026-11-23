@@ -887,17 +887,52 @@ class SecurityAnalystAndKNUSTPolicyTests(TestCase):
         )
         new_token = generate_jwt_token(new_vendor_user)
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {new_token}')
-        self.client.post('/api/vendor/apply/', {
+        apply_res = self.client.post('/api/vendor/apply/', {
             'kitchen': 'Fresh Pot Kitchen',
             'hall': 'Queens Hall',
             'sells': ['Jollof'],
             'about': 'Freshly cooked smoky jollof every weekend.',
             'payout': '0241234567'
         }, format='json')
+        self.assertEqual(apply_res.status_code, 200)
+        self.assertEqual(apply_res.data['status'], 'pending')
         fresh_vendor = Vendor.objects.get(user=new_vendor_user)
+        self.assertFalse(fresh_vendor.active)
+        self.assertFalse(fresh_vendor.open)
         self.assertEqual(fresh_vendor.rating, 0.0)
         self.assertEqual(fresh_vendor.reviews, 0)
 
+        # Cannot publish meals before admin approval
+        pre_meal = self.client.post('/api/meals/', {
+            'name': 'Smoky Jollof',
+            'price': 35,
+            'stock': 8,
+            'cat': 'Rice & stews',
+            'desc': 'Firewood style jollof with chicken.'
+        }, format='json')
+        self.assertEqual(pre_meal.status_code, 403)
+
+        # Admin approves kitchen
+        pva_admin = User.objects.create_user(
+            id='u-test-fresh-adm',
+            email='freshadm@st.knust.edu.gh',
+            full_name='Fresh Admin',
+            reference_id='20812346',
+            phone='0241234568',
+            verified=True,
+            role='admin',
+            account_type='customer',
+            is_admin=True,
+            password='Password123',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(pva_admin)}')
+        adm_res = self.client.patch(f'/api/admin/vendors/{fresh_vendor.id}/', {'active': True}, format='json')
+        self.assertEqual(adm_res.status_code, 200)
+        self.assertTrue(adm_res.data['active'])
+        self.assertTrue(adm_res.data['open'])
+
+        # Vendor can now publish dishes cleanly with zeroed initial rating/reviews
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {new_token}')
         meal_res = self.client.post('/api/meals/', {
             'name': 'Smoky Jollof',
             'price': 35,

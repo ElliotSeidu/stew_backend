@@ -438,7 +438,6 @@ def verify_email_view(request):
     if not code_valid:
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
-    was_unverified = not user.verified
     user.verified = True
     user.verification_code_hash = ''
     user.verification_code_expires = None
@@ -453,19 +452,6 @@ def verify_email_view(request):
         'login_code_hash',
         'login_code_expires',
     ])
-    if was_unverified:
-        for inactive_vendor in Vendor.objects.filter(user=user, active=False):
-            last_admin_evt = (
-                AuditEntry.objects.filter(
-                    action='admin_vendor_updated',
-                    entity_type='vendor',
-                    entity_id=inactive_vendor.id,
-                )
-                .order_by('-at')
-                .first()
-            )
-            if not last_admin_evt or last_admin_evt.extra.get('active') is not False:
-                Vendor.objects.filter(pk=inactive_vendor.pk).update(active=True, open=True)
 
     token = generate_jwt_token(user)
     record_audit(user.email, 'email_verified', 'user', user.id)
@@ -1012,7 +998,7 @@ def vendor_apply_view(request):
                 return Response({'errors': {'logo': str(e.detail[0] if isinstance(e.detail, list) else e.detail)}}, status=status.HTTP_400_BAD_REQUEST)
         user.save()
 
-        # Update or create vendor profile
+        # Update or create vendor profile (new applications remain pending until admin approval)
         vendor, _ = Vendor.objects.get_or_create(
             user=user,
             defaults={
@@ -1024,8 +1010,8 @@ def vendor_apply_view(request):
                 'prep': user.prep,
                 'rating': 0.0,
                 'reviews': 0,
-                'open': True,
-                'active': True,
+                'open': False,
+                'active': False,
             }
         )
         vendor.name = kitchen_name
@@ -1034,13 +1020,11 @@ def vendor_apply_view(request):
         if user.logo:
             vendor.logo = user.logo
         vendor.prep = user.prep
-        vendor.open = True
-        vendor.active = True
         vendor.save()
 
         record_audit(user.email, 'vendor_applied', 'vendor', vendor.id)
 
-    return Response({'status': 'active', 'ok': True, 'user': UserSerializer(user).data})
+    return Response({'status': 'active' if vendor.active else 'pending', 'ok': True, 'user': UserSerializer(user).data})
 
 
 @api_view(['POST'])
@@ -2500,10 +2484,13 @@ def admin_vendor_detail_view(request, pk):
         return Response({'message': 'Vendor not found.'}, status=status.HTTP_404_NOT_FOUND)
 
     data = request.data
+    was_inactive = not vendor.active
     if 'active' in data:
         vendor.active = bool(data['active'])
     if 'open' in data:
         vendor.open = bool(data['open'])
+    elif was_inactive and vendor.active:
+        vendor.open = True
     vendor.save()
     record_audit(request.user.email, 'admin_vendor_updated', 'vendor', vendor.id, {'active': vendor.active, 'open': vendor.open})
     return Response(VendorSerializer(vendor).data)

@@ -4175,6 +4175,141 @@ class SecurityHeadersCacheControlTests(TestCase):
         self.assertNotIn('no-store', pub_res.headers.get('Cache-Control', '').lower())
 
 
+class PendingVendorApprovalTests(TestCase):
+    """J3: New vendor applications must remain pending (active=False, open=False) until admin approval."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(
+            id='u-pva-admin',
+            email='pvaadmin@st.knust.edu.gh',
+            full_name='PVA Admin',
+            role='admin',
+            account_type='customer',
+            is_admin=True,
+            verified=True,
+            reference_id='20902001',
+            password='Password123',
+        )
+        self.applicant = User.objects.create_user(
+            id='u-pva-app',
+            email='pvaapp@st.knust.edu.gh',
+            full_name='PVA Applicant',
+            role='customer',
+            account_type='customer',
+            verified=True,
+            reference_id='20902002',
+            password='Password123',
+        )
+        self.active_user = User.objects.create_user(
+            id='u-pva-act',
+            email='pvaact@st.knust.edu.gh',
+            full_name='PVA Active Chef',
+            role='vendor',
+            account_type='vendor',
+            is_vendor=True,
+            verified=True,
+            reference_id='20902003',
+            password='Password123',
+        )
+        self.active_vendor = Vendor.objects.create(
+            id='v-pva-act',
+            user=self.active_user,
+            name='Existing Active Pot',
+            hall='Unity Hall (Conti)',
+            bio='Active vendor.',
+            prep=6,
+            rating=4.5,
+            reviews=5,
+            open=True,
+            active=True,
+        )
+        self.admin_token = generate_jwt_token(self.admin)
+        self.app_token = generate_jwt_token(self.applicant)
+        self.act_token = generate_jwt_token(self.active_user)
+
+    def test_new_vendor_application_awaits_admin_approval_and_blocks_verify_auto_activate(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.app_token}')
+        apply_res = self.client.post('/api/vendor/apply/', {
+            'kitchen': 'Pending Okro Kitchen',
+            'hall': 'Unity Hall (Conti)',
+            'sells': ['Okro stew'],
+            'about': 'Fresh okro stew prepared safely on campus.',
+            'payout': '0249333444',
+        }, format='json')
+        self.assertEqual(apply_res.status_code, 200)
+        self.assertEqual(apply_res.data['status'], 'pending')
+        self.assertIs(apply_res.data['user']['vendorActive'], False)
+        vendor = Vendor.objects.get(user=self.applicant)
+        self.assertFalse(vendor.active)
+        self.assertFalse(vendor.open)
+
+        # Hidden from public catalog before admin approval
+        self.client.credentials()
+        pub_list = self.client.get('/api/vendors/').data
+        pub_items = pub_list.get('results', pub_list) if isinstance(pub_list, dict) else pub_list
+        self.assertFalse(any(v['id'] == vendor.id for v in pub_items))
+        self.assertEqual(self.client.get(f'/api/vendors/{vendor.id}/').status_code, 404)
+
+        # Pending vendor cannot create meals
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.app_token}')
+        blocked_meal = self.client.post('/api/meals/', {
+            'name': 'Premature Dish',
+            'price': 30,
+            'stock': 5,
+            'cat': 'Soups',
+            'desc': 'Should not publish before approval.',
+        }, format='json')
+        self.assertEqual(blocked_meal.status_code, 403)
+
+        # Email re-verification must not auto-activate pending vendor
+        self.applicant.verified = False
+        self.applicant.verification_code_hash = hash_token('778899')
+        self.applicant.verification_code_expires = timezone.now() + timedelta(minutes=10)
+        self.applicant.save(update_fields=['verified', 'verification_code_hash', 'verification_code_expires'])
+        self.client.credentials()
+        ver_res = self.client.post('/api/auth/verify-email/', {'email': self.applicant.email, 'code': '778899'}, format='json')
+        self.assertEqual(ver_res.status_code, 200)
+        vendor.refresh_from_db()
+        self.assertFalse(vendor.active)
+        self.assertFalse(vendor.open)
+
+        # Already-active vendor updating profile via /vendor/apply/ remains active
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.act_token}')
+        upd_res = self.client.post('/api/vendor/apply/', {
+            'kitchen': 'Updated Active Pot',
+            'hall': 'Unity Hall (Conti)',
+            'sells': ['Soup'],
+            'about': 'Updated bio stays active.',
+            'payout': '0249444555',
+        }, format='json')
+        self.assertEqual(upd_res.status_code, 200)
+        self.assertEqual(upd_res.data['status'], 'active')
+        self.assertIs(upd_res.data['user']['vendorActive'], True)
+
+        # Admin approves vendor (active=True, open omitted -> auto-opens open=True)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        adm_res = self.client.patch(f'/api/admin/vendors/{vendor.id}/', {'active': True}, format='json')
+        self.assertEqual(adm_res.status_code, 200)
+        self.assertTrue(adm_res.data['active'])
+        self.assertTrue(adm_res.data['open'])
+
+        # Now public, /auth/me/ shows vendorActive=True, and vendor can publish meals
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.app_token}')
+        me_res = self.client.get('/api/auth/me/')
+        self.assertIs(me_res.data['vendorActive'], True)
+        ok_meal = self.client.post('/api/meals/', {
+            'name': 'Approved Dish',
+            'price': 30,
+            'stock': 5,
+            'cat': 'Soups',
+            'desc': 'Approved and ready.',
+        }, format='json')
+        self.assertEqual(ok_meal.status_code, 201)
+        self.assertEqual(self.client.get(f'/api/vendors/{vendor.id}/').status_code, 200)
+
+
+
 
 
 

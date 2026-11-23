@@ -16,6 +16,7 @@ class UserSerializer(serializers.ModelSerializer):
     area = serializers.CharField(source='hall', allow_blank=True, required=False)
     vendorId = serializers.SerializerMethodField()
     kitchenOpen = serializers.SerializerMethodField()
+    vendorActive = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -23,7 +24,7 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'fullName', 'email', 'role', 'accountType',
             'isVendor', 'isAdmin', 'kitchenName', 'sells',
             'area', 'hall', 'phone', 'referenceId', 'bio',
-            'prep', 'payout', 'logo', 'verified', 'vendorId', 'kitchenOpen'
+            'prep', 'payout', 'logo', 'verified', 'vendorId', 'kitchenOpen', 'vendorActive'
         ]
         read_only_fields = fields
 
@@ -40,6 +41,10 @@ class UserSerializer(serializers.ModelSerializer):
     def get_kitchenOpen(self, obj):
         vendor = self._get_vendor(obj)
         return vendor.open if vendor else True
+
+    def get_vendorActive(self, obj):
+        vendor = self._get_vendor(obj)
+        return vendor.active if vendor else None
 
 
 class RegisterSerializer(serializers.Serializer):
