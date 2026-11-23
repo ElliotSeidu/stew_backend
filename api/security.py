@@ -169,7 +169,17 @@ def is_jwt_revoked(token: str, payload: dict | None = None) -> bool:
 
 
 class SecurityHeadersMiddleware:
-    """Attaches Content-Security-Policy and Permissions-Policy headers on every response."""
+    """Attaches Content-Security-Policy, Permissions-Policy, and no-store Cache-Control on sensitive API routes."""
+
+    _SENSITIVE_API_PREFIXES = (
+        '/api/auth/',
+        '/api/orders/',
+        '/api/payments/',
+        '/api/payouts/',
+        '/api/admin/',
+        '/api/support/',
+        '/api/notifications/',
+    )
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -181,6 +191,11 @@ class SecurityHeadersMiddleware:
         else:
             response.setdefault('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
         response.setdefault('Permissions-Policy', 'geolocation=(), camera=(), microphone=(), payment=()')
+        if request.path.startswith('/api/') and (
+            request.META.get('HTTP_AUTHORIZATION') or request.path.startswith(self._SENSITIVE_API_PREFIXES)
+        ):
+            response['Cache-Control'] = 'no-store, private'
+            response['Pragma'] = 'no-cache'
         return response
 
 

@@ -4116,6 +4116,66 @@ class ExpireUnpaidOrdersConcurrencyPostgresTests(TransactionTestCase):
                 )
 
 
+class SecurityHeadersCacheControlTests(TestCase):
+    """Authenticated and sensitive API routes must emit Cache-Control: no-store, private."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(
+            id='u-cc-admin',
+            email='ccadmin@st.knust.edu.gh',
+            full_name='CC Admin',
+            role='admin',
+            account_type='customer',
+            is_admin=True,
+            verified=True,
+            reference_id='20901001',
+            password='Password123',
+        )
+        self.student = User.objects.create_user(
+            id='u-cc-stud',
+            email='ccstud@st.knust.edu.gh',
+            full_name='CC Student',
+            role='customer',
+            account_type='customer',
+            verified=True,
+            reference_id='20901002',
+            password='Password123',
+        )
+        self.admin_token = generate_jwt_token(self.admin)
+        self.stud_token = generate_jwt_token(self.student)
+
+    def test_sensitive_and_authenticated_api_responses_set_no_store(self):
+        # Unauthenticated login failure still under /api/auth/
+        login_res = self.client.post('/api/auth/login/', {'email': self.student.email, 'password': 'WrongPassword1'}, format='json')
+        self.assertIn('no-store', login_res.headers.get('Cache-Control', '').lower())
+        self.assertIn('private', login_res.headers.get('Cache-Control', '').lower())
+        self.assertEqual(login_res.headers.get('Pragma', '').lower(), 'no-cache')
+
+        # Authenticated endpoints
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.stud_token}')
+        for path in ('/api/auth/me/', '/api/orders/', '/api/notifications/'):
+            res = self.client.get(path)
+            cc = res.headers.get('Cache-Control', '').lower()
+            self.assertIn('no-store', cc, f'{path} missing no-store: {cc}')
+            self.assertIn('private', cc, f'{path} missing private: {cc}')
+            self.assertEqual(res.headers.get('Pragma', '').lower(), 'no-cache', path)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        for path in ('/api/admin/users/', '/api/payouts/'):
+            res = self.client.get(path)
+            cc = res.headers.get('Cache-Control', '').lower()
+            self.assertIn('no-store', cc, f'{path} missing no-store: {cc}')
+            self.assertIn('private', cc, f'{path} missing private: {cc}')
+
+        # Public non-sensitive catalog endpoint works normally
+        self.client.credentials()
+        pub_res = self.client.get('/api/meals/')
+        self.assertEqual(pub_res.status_code, 200)
+        self.assertNotIn('no-store', pub_res.headers.get('Cache-Control', '').lower())
+
+
+
 
 
 
