@@ -1,0 +1,84 @@
+{
+  "j8": {
+    "orderIdJ8": "STW-5213",
+    "caseCode": "CASE-4953",
+    "disputeHadButton": true,
+    "resolvePostsFiredOnDoubleClick": 2,
+    "doubleClickBugConfirmed": true,
+    "batchCreated": true
+  },
+  "j9": {
+    "auditLoaded": true,
+    "suspendedInUi": true,
+    "stud401Count": 5,
+    "studUrlAfter401": "http://127.0.0.1:5173/app/orders",
+    "studTokenStillInLs": true,
+    "studOldTokenReplayStatus": 401,
+    "custAdminUiRedirectUrl": "http://127.0.0.1:5173/app",
+    "custAdminApiProbes": {
+      "users": 403,
+      "audit": 403,
+      "batches": 403
+    },
+    "vendAdminUiRedirectUrl": "http://127.0.0.1:5173/app/vendor",
+    "vendAdminApiProbes": {
+      "users": 403,
+      "audit": 403,
+      "batches": 403
+    }
+  },
+  "j10": {
+    "j10Api": {
+      "mealXssStatus": 201,
+      "mealXssId": "m_76ff7df2",
+      "jsMealImgStatus": 400,
+      "jsProfileLogoStatus": 400,
+      "chatXssStatus": 200,
+      "bioXssStatus": 200
+    },
+    "custXssWrite": {
+      "supStatus": 201,
+      "nameUpdateStatus": 200
+    },
+    "xssChecks": {
+      "custTriggered": false,
+      "adminTriggered": false,
+      "vendorTriggered": false,
+      "domInjectedScriptsCust": 0,
+      "domInjectedImgOnerrorCust": 0,
+      "domInjectedScriptsAdmin": 0
+    },
+    "idorCustB": 403,
+    "idorVendB": 403,
+    "tamperingResults": {
+      "priceTamperStatus": 201,
+      "priceTamperServerTotal": 47.25,
+      "priceTamperIgnoredClientTotal1": true,
+      "negQtyStatus": 400,
+      "floatQtyStatus": 400,
+      "hugeQtyStatus": 400,
+      "dupSplitStatus": 400,
+      "crossVendStatus": 400
+    },
+    "unauthResults": {
+      "me": 401,
+      "orders": 401,
+      "payouts": 401,
+      "adminUsers": 401
+    },
+    "corsProbeRes": {
+      "blocked": true,
+      "error": "Failed to fetch"
+    }
+  },
+  "j11": {
+    "slowLoadMs": 5859,
+    "modalOpenAfterBack": false,
+    "falseSuccessAfterBack": false,
+    "orderCreatePostsOnDoubleTap": 1,
+    "falseSuccessAfterFailedVerify": false,
+    "exp401Count": 4,
+    "urlAfterExpiredJwtBeforeFix": "http://127.0.0.1:5173/app/orders",
+    "expiredTokenClearedBeforeFix": false
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "j5": {
+    "orderId": "STW-1815",
+    "inVendorDomBeforePay": false,
+    "vendorDirectGetStatusBeforePay": 404,
+    "vendorPrepStatusBeforePay": 404,
+    "vendorOrderInListBeforePay": false,
+    "vendorAppearElapsedMs": 2238,
+    "orderOccurrencesInDomAfterPay": 2,
+    "doubleVerifyStatus": 200,
+    "hasHandoffCodeInVendorApiAfterPay": false
+  },
+  "j6": {
+    "orderAId": "STW-1781",
+    "mealAId": "m1",
+    "stockBeforeA": 19,
+    "stockWhileUnpaidA": 18,
+    "stockAfterCancelA": 19,
+    "orderBId": "STW-5863",
+    "mealBId": "m1",
+    "stockWhileUnpaidB": 18,
+    "stockAfterExpireB": 19,
+    "expireCmdOut": "Expired 2 unpaid order(s) older than 0m.",
+    "orderBStatus": "cancelled",
+    "orderBPayStatus": "cancelled",
+    "vendorSawOrderAOrB": false
+  },
+  "j7": {
+    "orderId": "STW-1815",
+    "customerSawHandoffCode": true,
+    "custMeetupStatus": 400,
+    "vendMeetupConfirm": 400,
+    "handoffCodeRotatedAfterLockout": true,
+    "lockoutUiSeen": "",
+    "hadPendingReview": false,
+    "reviewVisibleOnVendor": true,
+    "vendorHandoffLeaksInTelemetry": []
+  }
+}

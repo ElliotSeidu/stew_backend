@@ -1,0 +1,878 @@
+{
+  "j1": {
+    "status": "pass",
+    "landingDeskTitle": "STEW – Campus food, sorted | KNUST",
+    "landingSnippet": "STEW\nNo photo yet\nKNUST Student Food Network\nOrder great food near you with STEW!\n\nFast, fresh homemade meals cooked by verified KNUST stude",
+    "discoverAnonMobUrl": "http://127.0.0.1:5173/app/login",
+    "discoverAnonDeskUrl": "http://127.0.0.1:5173/app/login",
+    "vendorAnonMobUrl": "http://127.0.0.1:5173/app/login",
+    "anonCatalog": {
+      "vendorsStatus": 200,
+      "vendorCount": 9,
+      "mealsStatus": 200,
+      "mealCount": 22
+    },
+    "legalResults": {
+      "terms": "STEW\nBack\nPrivacy Policy\nTerms of Service\nCommunity Guidelines\nFood Safety Stand",
+      "privacy": "STEW\nBack\nPrivacy Policy\nTerms of Service\nCommunity Guidelines\nFood Safety Stand",
+      "refunds": "STEW\nBack\nPrivacy Policy\nTerms of Service\nCommunity Guidelines\nFood Safety Stand"
+    },
+    "notFoundSnippet": "Page not found\n\nThat page doesn't exist or has moved.\n\nGo to STEW",
+    "appState": {
+      "localStorage": {
+        "stew.favs": [],
+        "stew.cart": {
+          "vendorId": null,
+          "lines": []
+        },
+        "stew.theme": "system"
+      },
+      "sessionStorage": {},
+      "cookies": "",
+      "indexedDB": [],
+      "serviceWorkers": [],
+      "cacheStorage": [],
+      "manifest": null
+    },
+    "consoleErrors": [
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/app/discover",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/app/discover",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/app/vendors/v1",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/app/vendors/v1",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/legal/terms",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/legal/terms",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/legal/privacy",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/legal/privacy",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/legal/refunds",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/legal/refunds",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/does-not-exist-404",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/does-not-exist-404",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/app/discover",
+        "leakFlags": []
+      },
+      {
+        "type": "error",
+        "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+        "location": "http://127.0.0.1:5173/app/discover",
+        "leakFlags": []
+      }
+    ],
+    "pageErrors": []
+  },
+  "j2": {
+    "nonCampusErr": "Use your KNUST email (name@st.knust.edu.gh)",
+    "otpScraped": true,
+    "plusAddressStatus": 400,
+    "genericWrongPwMatch": true,
+    "wrongPwMsg": "Incorrect email or password",
+    "saw429UiMsg": "Too many login attempts. Please wait 5 minutes.",
+    "storageClearedOnLogout": [],
+    "replayOldTokenStatus": 401,
+    "cachedUserHasHashFields": []
+  },
+  "j3": {
+    "vendorId": "v_63840bfd",
+    "vendorActive": true,
+    "publishMealBeforeApprovalStatus": 201,
+    "note": "BUG CONFIRMED: Unapproved vendor auto-activated on /vendor/apply/ and published meal (201) without admin approval"
+  },
+  "j4": {
+    "uploadResults": {
+      "nonImage": [
+        "Please choose an image file"
+      ],
+      "oversized": [
+        "That image is too large (max 4 MB)"
+      ],
+      "svgAcceptedInUi": false,
+      "svgAlert": [
+        "That image is too large (max 4 MB)"
+      ],
+      "validPngPreviewed": false
+    },
+    "mealIdCreated": "m_f0f5f230",
+    "switchVisible": true,
+    "visibleInPublicApiAfterOff": false,
+    "visibleInPublicApiAfterOn": true
+  },
+  "telemetry": {
+    "j1": {
+      "console": [
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/discover",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/discover",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/vendors/v1",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/vendors/v1",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/legal/terms",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/legal/terms",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/legal/privacy",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/legal/privacy",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/legal/refunds",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/legal/refunds",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/does-not-exist-404",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/does-not-exist-404",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/discover",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/discover",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        }
+      ]
+    },
+    "j2": {
+      "console": [
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/signup",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/signup",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/account",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/account",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+          "location": "http://127.0.0.1:8000/api/auth/me/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+          "location": "http://127.0.0.1:8000/api/auth/me/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/register/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/register/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+          "location": "http://127.0.0.1:8000/api/auth/login/",
+          "leakFlags": []
+        }
+      ],
+      "bodyLeaks": []
+    },
+    "j3": {
+      "console": [
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/signup",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/signup",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/vendor/apply",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/vendor/apply",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        }
+      ],
+      "bodyLeaks": []
+    },
+    "j4": {
+      "console": [
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/login",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/login",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/vendor/menu",
+          "leakFlags": []
+        },
+        {
+          "type": "error",
+          "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+          "location": "http://127.0.0.1:5173/app/vendor/menu",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": "http://127.0.0.1:5173/@vite/client",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        },
+        {
+          "type": "info",
+          "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+          "location": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+          "leakFlags": []
+        }
+      ],
+      "bodyLeaks": []
+    }
+  }
+}

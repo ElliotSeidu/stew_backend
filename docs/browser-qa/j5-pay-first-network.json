@@ -1,0 +1,129 @@
+{
+  "orderId": "STW-1815",
+  "vendorBeforePay": {
+    "listStatus": 200,
+    "orderInVendorList": false,
+    "payoutStatus": 200,
+    "payoutHeld": 0,
+    "payoutNewCount": 0,
+    "detailStatus": 404,
+    "detailBody": {
+      "message": "Order not found"
+    },
+    "prepStatus": 404,
+    "vendorOrdersSample": []
+  },
+  "vendorAfterPay": {
+    "detailStatus": 200,
+    "hasHandoffCodeInVendorResponse": false,
+    "orderCountMatchingId": 1,
+    "detailRedactedSample": {
+      "id": "STW-1815",
+      "vendorId": "v1",
+      "vendorName": "Auntie Ama's Soup Pot",
+      "customer": "Kofi Asante",
+      "email": null,
+      "phone": "0240000001",
+      "area": "Unity Hall (Conti)",
+      "contactNote": "",
+      "lines": [
+        {
+          "qty": 1,
+          "name": "Palm nut soup (abenkwan)",
+          "note": "",
+          "image": "/foods/palm-nut-soup.jpg",
+          "price": 45,
+          "mealId": "m1"
+        }
+      ],
+      "subtotal": 45,
+      "fee": 2.25,
+      "total": 47.25,
+      "orderNote": "",
+      "handoffCode": null,
+      "pickupDay": "2026-11-25",
+      "pickupSlot": "afternoon",
+      "payment": {
+        "status": "paid",
+        "provider": "paystack",
+        "reference": null,
+        "paidAt": 1795474464398,
+        "expiresAt": null
+      },
+      "settlement": {
+        "status": "pending",
+        "releasedAt": null,
+        "net": 0
+      },
+      "prepStage": "accepted",
+      "prepAt": {
+        "accepted": 1795474454083
+      },
+      "status": "preparing",
+      "meetup": null,
+      "messages": [],
+      "createdAt": 1795474454094,
+      "collectedAt": null,
+      "collectedVia": "",
+      "cancelledAt": null,
+      "payoutBatchId": null,
+      "reviewed": false
+    }
+  },
+  "vendorAppearElapsedMs": 2238,
+  "doubleVerify": {
+    "status": 200,
+    "body": {
+      "id": "STW-1815",
+      "vendorId": "v1",
+      "vendorName": "Auntie Ama's Soup Pot",
+      "customer": "Kofi Asante",
+      "email": "demo@st.knust.edu.gh",
+      "phone": "0240000001",
+      "area": "Unity Hall (Conti)",
+      "contactNote": "",
+      "lines": [
+        {
+          "qty": 1,
+          "name": "Palm nut soup (abenkwan)",
+          "note": "",
+          "image": "/foods/palm-nut-soup.jpg",
+          "price": 45,
+          "mealId": "m1"
+        }
+      ],
+      "subtotal": 45,
+      "fee": 2.25,
+      "total": 47.25,
+      "orderNote": "",
+      "handoffCode": "[REDACTED_CODE]",
+      "pickupDay": "2026-11-25",
+      "pickupSlot": "afternoon",
+      "payment": {
+        "status": "paid",
+        "provider": "paystack",
+        "reference": "PSK-09E6B678DBE2485B",
+        "paidAt": 1795474464398,
+        "expiresAt": null
+      },
+      "settlement": {
+        "status": "pending",
+        "releasedAt": null,
+        "net": 0
+      },
+      "prepStage": "accepted",
+      "prepAt": {
+        "accepted": 1795474454083
+      },
+      "status": "preparing",
+      "meetup": null,
+      "messages": [],
+      "createdAt": 1795474454094,
+      "collectedAt": null,
+      "collectedVia": "",
+      "cancelledAt": null,
+      "payoutBatchId": null,
+      "reviewed": false
+    }
+  }
+}

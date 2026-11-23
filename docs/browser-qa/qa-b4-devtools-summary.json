@@ -1,0 +1,1432 @@
+{
+  "contextsAudited": 12,
+  "consoleErrorCount": 206,
+  "consoleErrorsSample": [
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/app/discover",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/app/discover",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/app/vendors/v1",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/app/vendors/v1",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/legal/terms",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/legal/terms",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/legal/privacy",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/legal/privacy",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/legal/refunds",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/legal/refunds",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/does-not-exist-404",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/does-not-exist-404",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_desktop",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_desktop",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_desktop",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/app/discover",
+      "leakFlags": []
+    },
+    {
+      "tag": "j1_anon_desktop",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/app/discover",
+      "leakFlags": []
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/app/signup",
+      "leakFlags": []
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "type": "error",
+      "text": "X-Frame-Options may only be set via an HTTP header sent along with a document. It may not be set inside <meta>.",
+      "location": "http://127.0.0.1:5173/app/signup",
+      "leakFlags": []
+    }
+  ],
+  "consoleWarningCount": 0,
+  "pageErrorCount": 0,
+  "pageErrors": [],
+  "consoleLeakFlags": [],
+  "bodyLeaks": [],
+  "failedRequestsCount": 42,
+  "failedRequestsSample": [
+    {
+      "tag": "j3_vendor_applicant",
+      "method": "POST",
+      "url": "http://127.0.0.1:8000/api/analytics/events/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j3_vendor_applicant",
+      "method": "POST",
+      "url": "http://127.0.0.1:8000/api/analytics/events/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j4_vendor_desktop",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/payouts/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j4_vendor_desktop",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/payouts/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j4_vendor_desktop",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/orders/?scope=vendor",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j4_vendor_desktop",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/orders/?scope=vendor",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j4_vendor_desktop",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/payouts/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j4_vendor_desktop",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/payouts/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "vendor_j5_j7",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/payouts/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "vendor_j5_j7",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/payouts/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "vendor_j5_j7",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/orders/?scope=vendor",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "vendor_j5_j7",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/orders/?scope=vendor",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "vendor_j5_j7",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/payouts/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "vendor_j5_j7",
+      "method": "GET",
+      "url": "http://127.0.0.1:8000/api/payouts/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j8_customer",
+      "method": "POST",
+      "url": "http://127.0.0.1:8000/api/analytics/events/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j8_customer",
+      "method": "POST",
+      "url": "http://127.0.0.1:8000/api/analytics/events/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j8_customer",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/favicon.svg",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j8_customer",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/favicon.svg",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j8_customer",
+      "method": "POST",
+      "url": "http://127.0.0.1:8000/api/support/cases/",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "tag": "j8_customer",
+      "method": "POST",
+      "url": "http://127.0.0.1:8000/api/support/cases/",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "largePayloadsCount": 528,
+  "largePayloads": [
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/@vite/client",
+      "sizeBytes": 221509,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/@vite/client",
+      "sizeBytes": 221509,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-router-dom.js?v=6254fc9c",
+      "sizeBytes": 1429699,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-router-dom.js?v=6254fc9c",
+      "sizeBytes": 1429699,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+      "sizeBytes": 3132238,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+      "sizeBytes": 3132238,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-hook-form.js?v=b2066789",
+      "sizeBytes": 394719,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-hook-form.js?v=b2066789",
+      "sizeBytes": 394719,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/lucide-react.js?v=46b745c4",
+      "sizeBytes": 5154754,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/lucide-react.js?v=46b745c4",
+      "sizeBytes": 5154754,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+      "sizeBytes": 3132238,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+      "sizeBytes": 3132238,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-router-dom.js?v=6254fc9c",
+      "sizeBytes": 1429699,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-router-dom.js?v=6254fc9c",
+      "sizeBytes": 1429699,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/lucide-react.js?v=46b745c4",
+      "sizeBytes": 5154754,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/lucide-react.js?v=46b745c4",
+      "sizeBytes": 5154754,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-hook-form.js?v=b2066789",
+      "sizeBytes": 394719,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-hook-form.js?v=b2066789",
+      "sizeBytes": 394719,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+      "sizeBytes": 3132238,
+      "status": 200
+    },
+    {
+      "tag": "j1_anon_mobile",
+      "method": "GET",
+      "url": "http://127.0.0.1:5173/node_modules/.vite/deps/react-dom_client.js?v=58440474",
+      "sizeBytes": 3132238,
+      "status": 200
+    }
+  ],
+  "slowApiCallsCount": 44,
+  "slowApiCalls": [
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/register/",
+      "durationMs": 1076,
+      "status": 201
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/register/",
+      "durationMs": 1077,
+      "status": 201
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1311,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1312,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1154,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1154,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1202,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1202,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1115,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1115,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1168,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1169,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1091,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1092,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1097,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1098,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1228,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1229,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1303,
+      "status": 400
+    },
+    {
+      "tag": "j2_customer_mobile",
+      "method": "POST",
+      "ep": "/auth/login/",
+      "durationMs": 1303,
+      "status": 400
+    }
+  ],
+  "missingNoStoreEndpoints": [
+    {
+      "ep": "/auth/check-reference/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/auth/verify-email/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/auth/me/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/auth/logout/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/payouts/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/auth/login/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-1815/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-1815/prep/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-1815/messages/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-1815/complete/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/payments/initialize/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/payments/verify/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-1781/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-1781/cancel/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-5863/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/admin/reviews/queue/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/support/cases/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-5213/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/support/cases/CASE-4953/resolve/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/payouts/batches/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/admin/audit/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/admin/users/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/admin/users/beb294fa-10e8-401f-bdf9-eef42d7e8507/",
+      "cacheControl": null
+    },
+    {
+      "ep": "/orders/STW-5213/messages/",
+      "cacheControl": null
+    }
+  ],
+  "pollingIntervalsMs": {
+    "j1_anon_mobile:/meals/": {
+      "hits": 6,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j1_anon_mobile:/vendors/": {
+      "hits": 2,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j1_anon_desktop:/meals/": {
+      "hits": 4,
+      "minDeltaMs": 1,
+      "medianDeltaMs": 1
+    },
+    "j2_customer_mobile:/vendors/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j2_customer_mobile:/meals/": {
+      "hits": 4,
+      "minDeltaMs": 1,
+      "medianDeltaMs": 1
+    },
+    "j2_customer_mobile:/auth/me/": {
+      "hits": 6,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j3_vendor_applicant:/vendors/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 37
+    },
+    "j3_vendor_applicant:/meals/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j3_vendor_applicant:/auth/me/": {
+      "hits": 6,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 2
+    },
+    "j3_vendor_applicant:/orders/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j3_vendor_applicant:/payouts/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j3_vendor_applicant:/vendors/v_63840bfd/": {
+      "hits": 2,
+      "minDeltaMs": 1,
+      "medianDeltaMs": 1
+    },
+    "j4_vendor_desktop:/orders/": {
+      "hits": 2,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j4_vendor_desktop:/auth/me/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j4_vendor_desktop:/meals/": {
+      "hits": 10,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "vendor_j5_j7:/orders/": {
+      "hits": 70,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 3
+    },
+    "vendor_j5_j7:/auth/me/": {
+      "hits": 12,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "vendor_j5_j7:/payouts/": {
+      "hits": 64,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 3
+    },
+    "vendor_j5_j7:/orders/STW-1815/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "customer_j5_j7:/meals/": {
+      "hits": 24,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 2
+    },
+    "customer_j5_j7:/vendors/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "customer_j5_j7:/vendors/v1/": {
+      "hits": 16,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "customer_j5_j7:/auth/me/": {
+      "hits": 44,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "customer_j5_j7:/vendors/v1/reviews/": {
+      "hits": 16,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "customer_j5_j7:/vendors/v2/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "customer_j5_j7:/vendors/v2/reviews/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "customer_j5_j7:/orders/": {
+      "hits": 2,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "customer_j5_j7:/orders/STW-1815/": {
+      "hits": 32,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "customer_j5_j7:/orders/STW-1781/": {
+      "hits": 8,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 7
+    },
+    "customer_j5_j7:/orders/STW-5863/": {
+      "hits": 14,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "admin_j7:/auth/me/": {
+      "hits": 8,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "admin_j7:/admin/reviews/queue/": {
+      "hits": 8,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j8_customer:/meals/": {
+      "hits": 16,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j8_customer:/vendors/": {
+      "hits": 8,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j8_customer:/vendors/v1/": {
+      "hits": 8,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j8_customer:/vendors/v1/reviews/": {
+      "hits": 8,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j8_customer:/auth/me/": {
+      "hits": 30,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j8_customer:/orders/": {
+      "hits": 6,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j8_customer:/support/cases/": {
+      "hits": 6,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j8_customer:/admin/users/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j8_customer:/admin/audit/": {
+      "hits": 2,
+      "minDeltaMs": 1,
+      "medianDeltaMs": 1
+    },
+    "j8_customer:/payouts/batches/": {
+      "hits": 2,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j8_customer:/orders/STW-5213/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "j8_customer:/payouts/": {
+      "hits": 2,
+      "minDeltaMs": 1,
+      "medianDeltaMs": 1
+    },
+    "admin_j8_j9:/auth/me/": {
+      "hits": 24,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "admin_j8_j9:/support/cases/": {
+      "hits": 10,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "admin_j8_j9:/payouts/batches/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "admin_j8_j9:/payouts/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "admin_j8_j9:/admin/audit/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "admin_j8_j9:/admin/users/": {
+      "hits": 6,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    },
+    "admin_j8_j9:/admin/reviews/queue/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j10_vendor_xss:/orders/": {
+      "hits": 18,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 18
+    },
+    "j10_vendor_xss:/payouts/": {
+      "hits": 18,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 2
+    },
+    "j11_resilience:/meals/": {
+      "hits": 16,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 7
+    },
+    "j11_resilience:/vendors/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j11_resilience:/vendors/v1/": {
+      "hits": 12,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 2
+    },
+    "j11_resilience:/auth/me/": {
+      "hits": 24,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j11_resilience:/vendors/v1/reviews/": {
+      "hits": 12,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 0
+    },
+    "j11_resilience:/orders/": {
+      "hits": 4,
+      "minDeltaMs": 0,
+      "medianDeltaMs": 1
+    }
+  },
+  "apiHeadersSample": {
+    "/meals/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/analytics/events/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/vendors/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/auth/check-reference/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/auth/verify-email/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/auth/me/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/auth/logout/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/vendor/apply/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/vendor/activate/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/payouts/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/vendors/v_63840bfd/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/auth/login/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/meals/m_f0f5f230/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-1815/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-1815/prep/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-1815/messages/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-1815/complete/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/vendors/v1/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/vendors/v1/reviews/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/vendors/v2/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/vendors/v2/reviews/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/payments/initialize/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/payments/verify/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-1781/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-1781/cancel/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-5863/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/admin/reviews/queue/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/support/cases/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-5213/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/support/cases/CASE-4953/resolve/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/payouts/batches/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/admin/audit/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/admin/users/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/admin/users/beb294fa-10e8-401f-bdf9-eef42d7e8507/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/orders/STW-5213/messages/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    },
+    "/meals/m_76ff7df2/": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+      "x-frame-options": "DENY",
+      "cache-control": null,
+      "server": "WSGIServer/0.2 CPython/3.13.17",
+      "x-powered-by": null
+    }
+  },
+  "pwaAudit": {
+    "localStorage": {
+      "stew.favs": [],
+      "stew.cart": {
+        "vendorId": null,
+        "lines": []
+      },
+      "stew.token": "[REDACTED]",
+      "stew.me": {
+        "id": "e07842f0-ff08-49c7-9b38-83b1fd404150",
+        "email": "demo@st.knust.edu.gh",
+        "fullName": "Kofi Asante",
+        "role": "customer",
+        "accountType": "customer",
+        "isVendor": false,
+        "isAdmin": false,
+        "verified": true,
+        "area": "Unity Hall (Conti)",
+        "hall": "Unity Hall (Conti)",
+        "phone": "0240000001",
+        "referenceId": "20812345",
+        "kitchenName": "",
+        "sells": [],
+        "bio": "",
+        "prep": 6,
+        "payout": "",
+        "logo": "",
+        "vendorId": null,
+        "kitchenOpen": true
+      },
+      "stew.theme": "system"
+    },
+    "sessionStorage": {},
+    "cookies": "",
+    "indexedDB": [],
+    "serviceWorkers": [
+      {
+        "scope": "http://127.0.0.1:4173/",
+        "activeState": "activated",
+        "scriptURL": "http://127.0.0.1:4173/sw.js"
+      }
+    ],
+    "cacheStorage": [
+      {
+        "name": "workbox-precache-v2-http://127.0.0.1:4173/",
+        "count": 35,
+        "apiUrlsCached": [],
+        "sampleUrls": [
+          "http://127.0.0.1:4173/pwa-64x64.png?__WB_REVISION__=c13647eb44e132f84b99e5844a6ac1dd",
+          "http://127.0.0.1:4173/pwa-512x512.png?__WB_REVISION__=ddd23633ff3834aeaf2f0625fa3ccc7c",
+          "http://127.0.0.1:4173/pwa-192x192.png?__WB_REVISION__=b01c174c09f254f28ceaa817d47cf3df",
+          "http://127.0.0.1:4173/maskable-icon-512x512.png?__WB_REVISION__=b88e58ea4b6389a457f369f3dedb50d8",
+          "http://127.0.0.1:4173/index.html?__WB_REVISION__=f087e408703ce0ca827f3efa9a685bff",
+          "http://127.0.0.1:4173/favicon.svg?__WB_REVISION__=dda45dea125f162b81dcc37a70c6fad1",
+          "http://127.0.0.1:4173/favicon.ico?__WB_REVISION__=d97a6c6c505a1e0e95724ea9b7b43977",
+          "http://127.0.0.1:4173/apple-touch-icon-180x180.png?__WB_REVISION__=2a18d7f8786d3c3c73a8623e1ebb272d",
+          "http://127.0.0.1:4173/foods/sobolo.jpg?__WB_REVISION__=753dc84462c509c513491a6b3522db83",
+          "http://127.0.0.1:4173/foods/rice-balls.jpg?__WB_REVISION__=d97452320fe6b4eb48fedba8e3eba1a8",
+          "http://127.0.0.1:4173/foods/pineapple-juice.jpg?__WB_REVISION__=03ffc6b16350c570e33a0ed5577756de",
+          "http://127.0.0.1:4173/foods/palm-nut-soup.jpg?__WB_REVISION__=ddfdcfa313a864c375eab0f0c9cea829"
+        ]
+      }
+    ],
+    "manifest": {
+      "name": "STEW – KNUST Campus Food",
+      "short_name": "STEW",
+      "description": "Order from verified KNUST student chefs.",
+      "start_url": "/app/login",
+      "display": "standalone",
+      "background_color": "#000000",
+      "theme_color": "#06B6D4",
+      "lang": "en",
+      "scope": "/",
+      "id": "/",
+      "orientation": "portrait",
+      "icons": [
+        {
+          "src": "pwa-64x64.png",
+          "sizes": "64x64",
+          "type": "image/png"
+        },
+        {
+          "src": "pwa-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        },
+        {
+          "src": "pwa-512x512.png",
+          "sizes": "512x512",
+          "type": "image/png",
+          "purpose": "any"
+        },
+        {
+          "src": "maskable-icon-512x512.png",
+          "sizes": "512x512",
+          "type": "image/png",
+          "purpose": "maskable"
+        }
+      ]
+    }
+  }
+}

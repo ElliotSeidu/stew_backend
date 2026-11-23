@@ -1,0 +1,64 @@
+{
+  "cacheControl": {
+    "/auth/me/": {
+      "status": 200,
+      "cacheControl": "no-store, private",
+      "pragma": "no-cache"
+    },
+    "/orders/": {
+      "status": 200,
+      "cacheControl": "no-store, private",
+      "pragma": "no-cache"
+    },
+    "/payouts/": {
+      "status": 200,
+      "cacheControl": "no-store, private",
+      "pragma": "no-cache"
+    },
+    "/admin/users/": {
+      "status": 200,
+      "cacheControl": "no-store, private",
+      "pragma": "no-cache"
+    }
+  },
+  "j3": {
+    "pendingBannerVisible": true,
+    "vendorId": "v_85385d1e",
+    "vendorActive": false,
+    "visiblePublicBeforeApproval": false,
+    "postMealBeforeApprovalStatus": 403,
+    "adminApproveStatus": 200,
+    "adminApproveActive": true,
+    "adminApproveOpen": true,
+    "vendorActiveAfter": true,
+    "postMealAfterApprovalStatus": 201
+  },
+  "j4": {
+    "svgAlert": [
+      "Please choose a JPEG, PNG, WebP, or GIF image"
+    ],
+    "removeAfterSvg": false,
+    "alertsAfterPng": [],
+    "removeAfterPng": false
+  },
+  "b4Polling": {
+    "windowMs": 13000,
+    "vendorOrderPollHits": 2,
+    "within6sBudget": true
+  },
+  "j5": {
+    "orderId": "STW-2354",
+    "vendorDetailBeforePayStatus": 404,
+    "appearMs": 4465
+  },
+  "j8": {
+    "resolvePostsFiredOnDoubleClick": 1,
+    "guardedSinglePost": true
+  },
+  "j9j11": {
+    "redirectedToLoginUrl": "http://127.0.0.1:5173/app/login",
+    "tokenCleared": true,
+    "remainingStewKeys": []
+  },
+  "xFrameErrors": 0
+}
