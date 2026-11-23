@@ -1,3 +1,5 @@
+from datetime import timedelta
+from django.conf import settings
 from rest_framework import serializers
 from api.authentication import is_platform_admin
 from api.models import User, Vendor, Meal, Order, Review, Compliance, PayoutBatch, SupportCase, AuditEntry
@@ -172,11 +174,18 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_payment(self, obj):
         paid_at_ts = int(obj.paid_at.timestamp() * 1000) if obj.paid_at else None
+        ttl_mins = max(1, int(getattr(settings, 'UNPAID_ORDER_TTL_MINUTES', 30)))
+        expires_at_ts = (
+            int((obj.created_at + timedelta(minutes=ttl_mins)).timestamp() * 1000)
+            if (obj.payment_status == 'pending' and not obj.cancelled_at and not obj.paid_at and obj.created_at)
+            else None
+        )
         return {
             'status': obj.payment_status,
             'provider': obj.payment_provider,
             'reference': obj.payment_reference if self._is_owner_or_admin(obj) else None,
             'paidAt': paid_at_ts,
+            'expiresAt': expires_at_ts,
         }
 
     def get_settlement(self, obj):

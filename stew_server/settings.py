@@ -321,6 +321,7 @@ if not DEBUG and PAYSTACK_ALLOW_MOCK:
 # + refresh token rotation in a future release.
 # ---------------------------------------------------------------------------
 JWT_ACCESS_TOKEN_LIFETIME_HOURS = int(os.getenv('JWT_ACCESS_TOKEN_LIFETIME_HOURS', '12'))
+UNPAID_ORDER_TTL_MINUTES = max(1, int(os.getenv('UNPAID_ORDER_TTL_MINUTES', '30')))
 
 # ---------------------------------------------------------------------------
 # PRODUCTION NOTES:

@@ -369,3 +369,14 @@ Before cutover, verify `TRUSTED_PROXY_COUNT` live on staging with two client dev
 
 - Deletions execute in `1,000`-row PK batches (`order_by('key')[:batch_size]`) so PostgreSQL autovacuum/MVCC stays smooth with zero long table locks.
 - Rate-limit counters older than `3600s + margin_seconds` (`2h`) and revocation rows older than `JWT_ACCESS_TOKEN_LIFETIME_HOURS + margin_seconds` (`13h` at default `12h`) are purged.
+
+---
+
+## 9. Scheduled Unpaid Order Stock Expiry (`expire_unpaid_orders`)
+
+Because creating an order reserves `Meal.left` portions before Paystack checkout completes, unpaid abandoned checkouts must expire after `UNPAID_ORDER_TTL_MINUTES` (default `30` minutes) so inventory is returned to available stock. `expire_unpaid_orders` locks each candidate order row with `SELECT ... FOR UPDATE`, re-checks payment status inside the lock (skipping paid/visible orders), marks expired unpaid orders `cancelled`, restores stock idempotently via `_restore_order_stock`, and writes an `order_expired_unpaid` audit entry. If a late Paystack webhook or verify arrives after expiry, `_mark_order_paid` routes it to `refund_pending` + `payment_received_after_cancel` audit entry without exposing the cancelled order as new kitchen work.
+
+```bash
+# Run every 5 minutes via cron, systemd timer, or platform scheduled job
+*/5 * * * * cd /app/stew_backend && /app/venv/bin/python manage.py expire_unpaid_orders >> /var/log/stew-expire-orders.log 2>&1
+```

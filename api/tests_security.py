@@ -3850,6 +3850,273 @@ class PayFirstVendorNotificationTests(TestCase):
             mock_push_c.assert_not_called()
 
 
+class ExpireUnpaidOrdersTests(TestCase):
+    """
+    Pay-first Task A4/A6: UNPAID_ORDER_TTL_MINUTES defaults to 30, and
+    expire_unpaid_orders locks & re-checks payment status before cancelling
+    expired unpaid orders, restoring stock once, skipping paid/fresh orders,
+    staying idempotent, and routing late payment to refund_pending.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.customer = User.objects.create_user(
+            email='pf.exp.cust@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Expiry Customer',
+            reference_id='20962001',
+            phone='0249620001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='pf.exp.vendor@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Expiry Chef',
+            reference_id='20962002',
+            phone='0249620002',
+            hall='Katanga Hall',
+            verified=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='Expiry Kitchen',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_pfexp',
+            user=cls.vendor_user,
+            name='Expiry Kitchen',
+            hall='Katanga Hall',
+            open=True,
+            active=True,
+        )
+        cls.meal = Meal.objects.create(
+            id='m_pfexp_1',
+            vendor=cls.vendor,
+            name='Omo Tuo',
+            price=Decimal('30.00'),
+            cat='Rice',
+            left=20,
+            on=True,
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def _create_via_api(self, qty=2):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+        r = self.client.post('/api/orders/', {
+            'lines': [{'mealId': self.meal.id, 'qty': qty}],
+            'area': 'Unity Hall',
+            'pickupDay': '2026-12-01',
+        }, format='json')
+        self.assertEqual(r.status_code, 201)
+        return r.data['id']
+
+    @override_settings(DEBUG=True, PAYSTACK_ALLOW_MOCK=True, PAYSTACK_SECRET_KEY='', EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_expire_unpaid_orders_restores_stock_once_skips_paid_and_late_pay_refunds(self):
+        from django.core import mail
+        from django.core.management import call_command
+        from api.models import AnalyticsEvent, AuditEntry
+
+        self.assertEqual(settings.UNPAID_ORDER_TTL_MINUTES, 30)
+
+        # 1. Expired unpaid order (35 min old, qty=3)
+        oid_exp = self._create_via_api(qty=3)
+        # 2. Fresh unpaid order (5 min old, qty=2) -> must NOT expire
+        oid_fresh = self._create_via_api(qty=2)
+        # 3. Old PAID order (45 min old, qty=4) -> must NOT expire
+        oid_paid = self._create_via_api(qty=4)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+        r_init = self.client.post('/api/payments/initialize/', {'orderId': oid_paid}, format='json')
+        ref_paid = r_init.data['reference']
+        self.assertEqual(self.client.post('/api/payments/verify/', {'orderId': oid_paid, 'reference': ref_paid}, format='json').status_code, 200)
+
+        # Initialize ref on the soon-to-expire order too so late payment arrival can be tested
+        r_init_exp = self.client.post('/api/payments/initialize/', {'orderId': oid_exp}, format='json')
+        ref_exp = r_init_exp.data['reference']
+
+        now = timezone.now()
+        Order.objects.filter(pk=oid_exp).update(created_at=now - timedelta(minutes=35))
+        Order.objects.filter(pk=oid_fresh).update(created_at=now - timedelta(minutes=5))
+        Order.objects.filter(pk=oid_paid).update(created_at=now - timedelta(minutes=45))
+
+        # Stock dropped 20 -> 20 - (3 + 2 + 4) = 11
+        self.assertEqual(Meal.objects.get(pk=self.meal.pk).left, 11)
+
+        # Customer sees payment.expiresAt on unpaid orders
+        r_det_fresh = self.client.get(f'/api/orders/{oid_fresh}/')
+        self.assertIsNotNone(r_det_fresh.data['payment']['expiresAt'])
+
+        # Run expire_unpaid_orders -> cancels only oid_exp and restores +3 -> 14
+        call_command('expire_unpaid_orders')
+        o_exp = Order.objects.get(pk=oid_exp)
+        o_fresh = Order.objects.get(pk=oid_fresh)
+        o_paid = Order.objects.get(pk=oid_paid)
+
+        self.assertEqual(o_exp.payment_status, 'cancelled')
+        self.assertIsNotNone(o_exp.cancelled_at)
+        self.assertIsNone(o_exp.paid_at)
+        self.assertEqual(o_fresh.payment_status, 'pending')
+        self.assertIsNone(o_fresh.cancelled_at)
+        self.assertEqual(o_paid.payment_status, 'paid')
+        self.assertIsNone(o_paid.cancelled_at)
+        self.assertEqual(Meal.objects.get(pk=self.meal.pk).left, 14)
+        self.assertEqual(AuditEntry.objects.filter(entity_id=oid_exp, action='order_expired_unpaid').count(), 1)
+
+        # Vendor STILL gets 404 on expired order
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.vendor_user)}')
+        self.assertEqual(self.client.get(f'/api/orders/{oid_exp}/').status_code, 404)
+
+        # Running again is strictly idempotent (stock remains 14, audit count remains 1)
+        call_command('expire_unpaid_orders')
+        self.assertEqual(Meal.objects.get(pk=self.meal.pk).left, 14)
+        self.assertEqual(AuditEntry.objects.filter(entity_id=oid_exp, action='order_expired_unpaid').count(), 1)
+
+        # Payment arriving after expiry follows existing paid-after-cancel path -> refund_pending + AuditEntry, 0 vendor alerts
+        mail.outbox.clear()
+        AnalyticsEvent.objects.filter(event='vendor_order_placed').delete()
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+        r_late = self.client.post('/api/payments/verify/', {'orderId': oid_exp, 'reference': ref_exp}, format='json')
+        self.assertEqual(r_late.status_code, 400)
+        self.assertEqual(r_late.data.get('code'), 'refund_pending')
+        o_exp.refresh_from_db()
+        self.assertEqual(o_exp.payment_status, 'refund_pending')
+        self.assertIsNotNone(o_exp.paid_at)
+        self.assertTrue(AuditEntry.objects.filter(entity_id=oid_exp, action='payment_received_after_cancel').exists())
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(AnalyticsEvent.objects.filter(event='vendor_order_placed').count(), 0)
+
+
+class ExpireUnpaidOrdersConcurrencyPostgresTests(TransactionTestCase):
+    """
+    Pay-first Task A4/A6 (PostgreSQL 16): Threaded race between expire_unpaid_orders
+    and _mark_order_paid must deterministically either mark paid (no expiry/restore)
+    or expire + refund_pending (stock restored exactly once), never both/corrupted.
+    """
+
+    @classmethod
+    def _skip_unless_pg(cls, inst):
+        if connection.vendor != 'postgresql':
+            inst.skipTest('Row-lock contention race requires PostgreSQL 16.')
+
+    def test_postgresql_threaded_expiry_vs_payment_race(self):
+        self._skip_unless_pg(self)
+        import threading
+        from django.core.management import call_command
+        from api.models import AnalyticsEvent, AuditEntry
+        from api.views import _mark_order_paid
+
+        customer = User.objects.create_user(
+            email='pf.pgrace.cust@st.knust.edu.gh',
+            password='Password123!',
+            full_name='PG Race Cust',
+            reference_id='20963001',
+            phone='0249630001',
+            hall='Unity Hall',
+            verified=True,
+        )
+        vendor_user = User.objects.create_user(
+            email='pf.pgrace.vend@st.knust.edu.gh',
+            password='Password123!',
+            full_name='PG Race Vendor',
+            reference_id='20963002',
+            phone='0249630002',
+            hall='Unity Hall',
+            verified=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='PG Race Kitchen',
+        )
+        vendor = Vendor.objects.create(
+            id='v_pf_pg', user=vendor_user, name='PG Race Kitchen', hall='Unity Hall', open=True, active=True
+        )
+        meal = Meal.objects.create(
+            id='m_pf_pg', vendor=vendor, name='Fufu Race', price=Decimal('25.00'), cat='Swallows', left=20, on=True
+        )
+
+        # Verify payment vs expiry across 4 concurrent orders with barrier sync
+        for idx in range(4):
+            AnalyticsEvent.objects.filter(event='vendor_order_placed').delete()
+            start_left = Meal.objects.get(pk=meal.pk).left
+            Meal.objects.filter(pk=meal.pk).update(left=models.F('left') - 1)
+            oid = f'STW-PF-PGR{idx}'
+            ref = f'PSK-PF-PGR{idx}'
+            order = Order.objects.create(
+                id=oid,
+                customer=customer,
+                customer_name=customer.full_name,
+                email=customer.email,
+                phone=customer.phone,
+                area='Unity Hall',
+                vendor=vendor,
+                vendor_name=vendor.name,
+                lines=[{'mealId': meal.id, 'name': meal.name, 'price': 25.0, 'qty': 1}],
+                subtotal=Decimal('25.00'),
+                fee=Decimal('1.25'),
+                total=Decimal('26.25'),
+                pickup_day='2026-12-01',
+                handoff_code='112233',
+                payment_status='pending',
+                payment_reference=ref,
+            )
+            Order.objects.filter(pk=oid).update(created_at=timezone.now() - timedelta(minutes=45))
+
+            barrier = threading.Barrier(2)
+            errors = []
+
+            def _run_expire():
+                connections.close_all()
+                try:
+                    barrier.wait(timeout=5)
+                    call_command('expire_unpaid_orders')
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    connections.close_all()
+
+            def _run_pay():
+                connections.close_all()
+                try:
+                    barrier.wait(timeout=5)
+                    _mark_order_paid(order, 'paystack_webhook', ref)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    connections.close_all()
+
+            t1 = threading.Thread(target=_run_expire)
+            t2 = threading.Thread(target=_run_pay)
+            t1.start()
+            t2.start()
+            t1.join(timeout=15)
+            t2.join(timeout=15)
+
+            self.assertEqual(errors, [], f'Iteration {idx} raised: {errors}')
+            order.refresh_from_db()
+            end_left = Meal.objects.get(pk=meal.pk).left
+            notif_count = AnalyticsEvent.objects.filter(event='vendor_order_placed').count()
+
+            if order.payment_status == 'paid':
+                self.assertIsNone(order.cancelled_at)
+                self.assertIsNotNone(order.paid_at)
+                self.assertEqual(end_left, start_left - 1)
+                self.assertEqual(notif_count, 1)
+            else:
+                self.assertEqual(order.payment_status, 'refund_pending')
+                self.assertIsNotNone(order.cancelled_at)
+                self.assertIsNotNone(order.paid_at)
+                self.assertEqual(end_left, start_left)
+                self.assertEqual(notif_count, 0)
+                self.assertTrue(
+                    AuditEntry.objects.filter(entity_id=oid, action='payment_received_after_cancel').exists()
+                )
+
+
+
 
 
 
