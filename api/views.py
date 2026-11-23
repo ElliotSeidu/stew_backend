@@ -1403,8 +1403,53 @@ def init_payment_view(request):
     })
 
 
+def _send_vendor_push(order) -> int:
+    """Queues web-push dispatch metadata to the vendor's subscribed devices without leaking customer PII."""
+    vendor_user_id = order.vendor.user_id if (order.vendor_id and order.vendor) else None
+    if not vendor_user_id:
+        return 0
+    subs = list(PushSubscription.objects.filter(user_id=vendor_user_id).values_list('endpoint', flat=True))
+    if not subs:
+        return 0
+    payload = {
+        'title': f"New paid order {order.id}",
+        'body': f"{order.customer_name} ordered from {order.vendor_name} (GH\u20b5 {Decimal(str(order.total or 0)):.2f})",
+        'url': '/app/vendor',
+        'tag': f"order-{order.id}",
+    }
+    logger.info("Dispatching vendor push notification for %s to %d endpoint(s): %s", order.id, len(subs), payload['title'])
+    return len(subs)
+
+
+def _notify_vendor_order_paid(order) -> None:
+    """Sends post-payment vendor email and push alert strictly without handoffCode, customer email, or payment reference."""
+    vendor = order.vendor if order.vendor_id else None
+    vendor_user = vendor.user if (vendor and vendor.user_id) else None
+    if vendor_user and vendor_user.email:
+        try:
+            send_mail(
+                subject=f"STEW: New paid order {order.id} for {order.vendor_name}",
+                message=(
+                    f"Hi {vendor_user.full_name or order.vendor_name},\n\n"
+                    f"Payment has been confirmed for order {order.id} "
+                    f"(total GH\u20b5 {Decimal(str(order.total or 0)):.2f}, {len(order.lines or [])} item line(s)).\n"
+                    f"Open your kitchen dashboard (/app/vendor) to accept and prepare the order.\n"
+                ),
+                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@stew.knust.edu.gh'),
+                recipient_list=[vendor_user.email],
+                fail_silently=True,
+            )
+        except Exception as exc:
+            logger.error("Failed to send vendor order email for %s: %s", order.id, exc)
+    try:
+        _send_vendor_push(order)
+    except Exception as exc:
+        logger.error("Failed to dispatch vendor push for %s: %s", order.id, exc)
+
+
 def _mark_order_paid(order, actor, reference):
     """Idempotently moves an order into escrow-held 'paid' state, or 'refund_pending' if paid after cancellation."""
+    should_notify = False
     with transaction.atomic():
         locked = Order.objects.select_for_update().get(pk=order.pk)
         if locked.payment_status in ('paid', 'released', 'refunded', 'refund_pending'):
@@ -1430,12 +1475,25 @@ def _mark_order_paid(order, actor, reference):
                 },
             )
             return locked
+        now = dj_timezone.now()
+        prep_at = dict(locked.prep_at or {})
+        if not prep_at.get('_vendorNotifiedAt'):
+            prep_at['_vendorNotifiedAt'] = int(now.timestamp() * 1000)
+            should_notify = True
         locked.payment_status = 'paid'
-        locked.paid_at = dj_timezone.now()
+        locked.paid_at = now
         locked.settlement_status = 'pending'  # Escrow held until student confirms collection
-        locked.save(update_fields=['payment_status', 'paid_at', 'settlement_status'])
+        locked.prep_at = prep_at
+        locked.save(update_fields=['payment_status', 'paid_at', 'settlement_status', 'prep_at'])
+        if should_notify:
+            AnalyticsEvent.objects.create(
+                event='vendor_order_placed',
+                payload={'vendorId': locked.vendor_id or '', 'itemCount': len(locked.lines or [])},
+            )
         record_audit(actor, 'payment_verified', 'order', locked.id, {'reference': reference, 'amount': str(locked.total)})
-        return locked
+    if should_notify:
+        _notify_vendor_order_paid(locked)
+    return locked
 
 
 def _paystack_verify(reference, order):

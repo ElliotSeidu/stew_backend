@@ -3624,6 +3624,233 @@ class PayFirstVendorVisibilityTests(TestCase):
         self.assertEqual(Meal.objects.get(pk=self.meal_a.pk).left, stock_before)
 
 
+class PayFirstVendorNotificationTests(TestCase):
+    """
+    Pay-first Task A3/A6: Vendor push notification, email, and vendor-facing
+    order analytics must NEVER fire at order creation, must fire ONCE at confirmed
+    payment (inside _mark_order_paid under lock) even across duplicate webhooks
+    or verify calls, and must NOT fire if payment arrives after cancellation.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.customer = User.objects.create_user(
+            email='pf.n.cust@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Notify Customer',
+            reference_id='20961001',
+            phone='0249610001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='pf.n.vendor@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Notify Chef',
+            reference_id='20961002',
+            phone='0249610002',
+            hall='Queens Hall',
+            verified=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='Notify Kitchen',
+        )
+        cls.vendor = Vendor.objects.create(
+            id='v_pfn',
+            user=cls.vendor_user,
+            name='Notify Kitchen',
+            hall='Queens Hall',
+            open=True,
+            active=True,
+        )
+        cls.meal = Meal.objects.create(
+            id='m_pfn_1',
+            vendor=cls.vendor,
+            name='Kontomire Stew',
+            price=Decimal('35.00'),
+            cat='Stews',
+            left=20,
+            on=True,
+        )
+        cls.push_sub = PushSubscription.objects.create(
+            user=cls.vendor_user,
+            endpoint='https://push.example.com/vendor-sub-1',
+            keys={'p256dh': 'k1', 'auth': 'k2'},
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    @override_settings(
+        DEBUG=True,
+        PAYSTACK_ALLOW_MOCK=True,
+        PAYSTACK_SECRET_KEY='',
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    )
+    def test_notifications_fire_once_on_payment_and_never_on_create(self):
+        from django.core import mail
+        from api.models import AnalyticsEvent
+
+        mail.outbox.clear()
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+
+        with patch('api.views._send_vendor_push', return_value=1) as mock_push:
+            r_create = self.client.post('/api/orders/', {
+                'lines': [{'mealId': self.meal.id, 'qty': 1}],
+                'area': 'Unity Hall',
+                'pickupDay': '2026-12-01',
+            }, format='json')
+            self.assertEqual(r_create.status_code, 201)
+            oid = r_create.data['id']
+
+            # ZERO vendor side effects on creation
+            self.assertEqual(len(mail.outbox), 0)
+            self.assertEqual(AnalyticsEvent.objects.filter(event='vendor_order_placed').count(), 0)
+            mock_push.assert_not_called()
+
+            r_init = self.client.post('/api/payments/initialize/', {'orderId': oid}, format='json')
+            self.assertEqual(r_init.status_code, 200)
+            ref = r_init.data['reference']
+
+            # Confirm payment -> exactly ONE email, ONE analytics event, ONE push dispatch
+            r_ver1 = self.client.post('/api/payments/verify/', {'orderId': oid, 'reference': ref}, format='json')
+            self.assertEqual(r_ver1.status_code, 200)
+            self.assertEqual(len(mail.outbox), 1)
+            self.assertEqual(mail.outbox[0].to, [self.vendor_user.email])
+            self.assertIn(oid, mail.outbox[0].subject + mail.outbox[0].body)
+            # Ensure sensitive customer/escrow fields never leak to vendor email
+            order_obj = Order.objects.get(pk=oid)
+            self.assertNotIn(order_obj.handoff_code, mail.outbox[0].body)
+            self.assertNotIn(self.customer.email, mail.outbox[0].body)
+            self.assertNotIn(ref, mail.outbox[0].body)
+            self.assertEqual(AnalyticsEvent.objects.filter(event='vendor_order_placed').count(), 1)
+            mock_push.assert_called_once()
+
+            # Repeat verify call -> STILL 1 email, 1 analytics event, 1 push call
+            r_ver2 = self.client.post('/api/payments/verify/', {'orderId': oid, 'reference': ref}, format='json')
+            self.assertEqual(r_ver2.status_code, 200)
+            self.assertEqual(len(mail.outbox), 1)
+            self.assertEqual(AnalyticsEvent.objects.filter(event='vendor_order_placed').count(), 1)
+            mock_push.assert_called_once()
+
+    @override_settings(
+        DEBUG=False,
+        PAYSTACK_ALLOW_MOCK=False,
+        PAYSTACK_SECRET_KEY='sk_test_webhook_secret_123',
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    )
+    def test_duplicate_webhook_plus_verify_fires_exactly_once_and_skips_cancelled(self):
+        from django.core import mail
+        from api.models import AnalyticsEvent, AuditEntry
+
+        mail.outbox.clear()
+        order = Order.objects.create(
+            id='STW-PF-WH1',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+            area='Unity Hall',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'price': 35.0, 'qty': 1}],
+            subtotal=Decimal('35.00'),
+            fee=Decimal('1.75'),
+            total=Decimal('36.75'),
+            pickup_day='2026-12-01',
+            handoff_code='445566',
+            payment_status='pending',
+            payment_reference='PSK-PF-WH1',
+        )
+
+        body = json.dumps({
+            'event': 'charge.success',
+            'data': {
+                'reference': 'PSK-PF-WH1',
+                'status': 'success',
+                'currency': 'GHS',
+                'amount': 3675,
+            },
+        }).encode('utf-8')
+        sig = hmac.new(b'sk_test_webhook_secret_123', body, hashlib.sha512).hexdigest()
+
+        fake_verify_resp = MagicMock(
+            ok=True,
+            json=lambda: {
+                'status': True,
+                'data': {'status': 'success', 'reference': 'PSK-PF-WH1', 'currency': 'GHS', 'amount': 3675},
+            },
+        )
+        with patch('api.views.http_requests.get', return_value=fake_verify_resp), \
+             patch('api.views._send_vendor_push', return_value=1) as mock_push:
+            # 1st webhook marks paid and fires notification once
+            r1 = self.client.post('/api/payments/webhook/', data=body, content_type='application/json', HTTP_X_PAYSTACK_SIGNATURE=sig)
+            self.assertEqual(r1.status_code, 200)
+            self.assertEqual(len(mail.outbox), 1)
+            self.assertEqual(AnalyticsEvent.objects.filter(event='vendor_order_placed').count(), 1)
+            mock_push.assert_called_once()
+
+            # Duplicate webhook + subsequent verify call -> no duplicate vendor alerts
+            r2 = self.client.post('/api/payments/webhook/', data=body, content_type='application/json', HTTP_X_PAYSTACK_SIGNATURE=sig)
+            self.assertEqual(r2.status_code, 200)
+            self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+            r3 = self.client.post('/api/payments/verify/', {'orderId': order.id, 'reference': 'PSK-PF-WH1'}, format='json')
+            self.assertEqual(r3.status_code, 200)
+
+            self.assertEqual(len(mail.outbox), 1)
+            self.assertEqual(AnalyticsEvent.objects.filter(event='vendor_order_placed').count(), 1)
+            mock_push.assert_called_once()
+
+        # Paid-after-cancel must NOT trigger vendor "new order" alerts
+        mail.outbox.clear()
+        AnalyticsEvent.objects.filter(event='vendor_order_placed').delete()
+        canc_order = Order.objects.create(
+            id='STW-PF-WHC',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+            area='Unity Hall',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'price': 35.0, 'qty': 1}],
+            subtotal=Decimal('35.00'),
+            fee=Decimal('1.75'),
+            total=Decimal('36.75'),
+            pickup_day='2026-12-01',
+            handoff_code='778899',
+            payment_status='cancelled',
+            cancelled_at=timezone.now(),
+            payment_reference='PSK-PF-WHC',
+        )
+        body_c = json.dumps({
+            'event': 'charge.success',
+            'data': {'reference': 'PSK-PF-WHC', 'status': 'success', 'currency': 'GHS', 'amount': 3675},
+        }).encode('utf-8')
+        sig_c = hmac.new(b'sk_test_webhook_secret_123', body_c, hashlib.sha512).hexdigest()
+        fake_verify_c = MagicMock(
+            ok=True,
+            json=lambda: {
+                'status': True,
+                'data': {'status': 'success', 'reference': 'PSK-PF-WHC', 'currency': 'GHS', 'amount': 3675},
+            },
+        )
+        with patch('api.views.http_requests.get', return_value=fake_verify_c), \
+             patch('api.views._send_vendor_push', return_value=1) as mock_push_c:
+            self.client.credentials()
+            rc = self.client.post('/api/payments/webhook/', data=body_c, content_type='application/json', HTTP_X_PAYSTACK_SIGNATURE=sig_c)
+            self.assertEqual(rc.status_code, 200)
+            canc_order.refresh_from_db()
+            self.assertEqual(canc_order.payment_status, 'refund_pending')
+            self.assertTrue(AuditEntry.objects.filter(entity_id=canc_order.id, action='payment_received_after_cancel').exists())
+            self.assertEqual(len(mail.outbox), 0)
+            self.assertEqual(AnalyticsEvent.objects.filter(event='vendor_order_placed').count(), 0)
+            mock_push_c.assert_not_called()
+
+
+
 
 
 
