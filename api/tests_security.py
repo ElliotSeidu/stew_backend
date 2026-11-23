@@ -395,8 +395,9 @@ class OrderStateAndConcurrencySecurityTests(TestCase):
             settlement_status='released',
         )
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.vendor_token}')
+        # Pay-first: vendor receives 404 (not 400) so unpaid orders stay invisible by direct ID
         unpaid_res = self.client.post(f'/api/orders/{unpaid.id}/prep/', {'stage': 'ready'}, format='json')
-        self.assertEqual(unpaid_res.status_code, 400)
+        self.assertEqual(unpaid_res.status_code, 404)
 
         collected_res = self.client.post(f'/api/orders/{collected.id}/prep/', {'stage': 'cooking'}, format='json')
         self.assertEqual(collected_res.status_code, 400)
@@ -1652,7 +1653,8 @@ class AtomicStateAndUploadSecurityTests(TestCase):
         self.assertEqual(self.client.post(f'/api/orders/{unpaid.id}/messages/', {'text': 'Hi'}, format='json').status_code, 400)
 
         self.client.force_authenticate(user=self.vendor_user)
-        self.assertEqual(self.client.post(f'/api/orders/{unpaid.id}/collection-nudge/', {}, format='json').status_code, 400)
+        # Pay-first: vendor receives 404 so unpaid order existence is not revealed
+        self.assertEqual(self.client.post(f'/api/orders/{unpaid.id}/collection-nudge/', {}, format='json').status_code, 404)
 
     def test_restore_order_stock_is_idempotent(self):
         from api.views import _restore_order_stock
@@ -2625,7 +2627,16 @@ class EscrowReleaseGuardTests(TestCase):
 
             self.client.force_authenticate(user=self.vendor_user)
             r_cmp = self.client.post(f'/api/orders/{o.id}/complete/', {'code': '112233'}, format='json')
-            self.assertEqual(r_cmp.status_code, 400, f'/complete/ on {o.id} gave {r_cmp.status_code}')
+            # Pay-first: unpaid/unpaid-cancelled orders return 404 to vendors (400 on paid/released)
+            expected_vendor_code = 400 if o.is_vendor_visible else 404
+            self.assertEqual(r_cmp.status_code, expected_vendor_code, f'/complete/ on {o.id} gave {r_cmp.status_code}')
+
+        # Admin still hits the inner escrow guard (400) on unpaid orders
+        admin_escrow = User.objects.create_superuser(
+            email='escg.admin@st.knust.edu.gh', password='Password123', full_name='Escrow Guard Admin',
+        )
+        self.client.force_authenticate(user=admin_escrow)
+        self.assertEqual(self.client.post(f'/api/orders/{o_pend.id}/complete/', {'code': '112233'}, format='json').status_code, 400)
 
         o_pend.refresh_from_db()
         o_canc.refresh_from_db()
@@ -3358,6 +3369,260 @@ class ConfigurableThrottleRateTests(TestCase):
                 self.assertEqual(r.status_code, 200, f'User request #{idx + 1} failed: {r.status_code}')
             r_user_blocked = self.client.get('/api/auth/me/', REMOTE_ADDR='196.201.88.12')
             self.assertEqual(r_user_blocked.status_code, 429)
+
+
+class PayFirstVendorVisibilityTests(TestCase):
+    """
+    Pay-first Task A2/A6: Unpaid, failed, abandoned, and expired orders must be
+    completely invisible to vendors (lists, 404 by direct ID, actions refused,
+    zero ledger/count metrics) while paid/released/paid-then-cancelled/refunded
+    orders remain visible and internal prep_at keys stay hidden.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_superuser(
+            email='pf.admin@st.knust.edu.gh',
+            password='Password123!',
+            full_name='PayFirst Admin',
+        )
+        cls.customer_a = User.objects.create_user(
+            email='pf.custa@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Customer A',
+            reference_id='20960001',
+            phone='0249600001',
+            hall='Unity Hall (Conti)',
+            verified=True,
+        )
+        cls.customer_b = User.objects.create_user(
+            email='pf.custb@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Customer B',
+            reference_id='20960002',
+            phone='0249600002',
+            hall='Queens Hall',
+            verified=True,
+        )
+        cls.vendor_a_user = User.objects.create_user(
+            email='pf.vendora@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Vendor A Chef',
+            reference_id='20960003',
+            phone='0249600003',
+            hall='Unity Hall (Conti)',
+            verified=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='both',
+            kitchen_name='PayFirst Kitchen A',
+        )
+        cls.vendor_a = Vendor.objects.create(
+            id='v_pfa',
+            user=cls.vendor_a_user,
+            name='PayFirst Kitchen A',
+            hall='Unity Hall (Conti)',
+            open=True,
+            active=True,
+        )
+        cls.vendor_b_user = User.objects.create_user(
+            email='pf.vendorb@st.knust.edu.gh',
+            password='Password123!',
+            full_name='Vendor B Chef',
+            reference_id='20960004',
+            phone='0249600004',
+            hall='Africa Hall',
+            verified=True,
+            is_vendor=True,
+            role='vendor',
+            account_type='vendor',
+            kitchen_name='PayFirst Kitchen B',
+        )
+        cls.vendor_b = Vendor.objects.create(
+            id='v_pfb',
+            user=cls.vendor_b_user,
+            name='PayFirst Kitchen B',
+            hall='Africa Hall',
+            open=True,
+            active=True,
+        )
+        cls.meal_a = Meal.objects.create(
+            id='m_pfa_1',
+            vendor=cls.vendor_a,
+            name='Abunuabunu',
+            price=Decimal('40.00'),
+            cat='Soups',
+            left=20,
+            on=True,
+        )
+        cls.meal_b = Meal.objects.create(
+            id='m_pfb_1',
+            vendor=cls.vendor_b,
+            name='Waakye Special',
+            price=Decimal('30.00'),
+            cat='Rice',
+            left=15,
+            on=True,
+        )
+
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def _make_order(self, oid, customer=None, vendor=None, payment_status='pending', prep_stage='accepted', paid_at=None, cancelled_at=None, collected_at=None, settlement_status='pending', subtotal=Decimal('40.00'), prep_at=None, meetup=None):
+        c = customer or self.customer_a
+        v = vendor or self.vendor_a
+        fee = (subtotal * Decimal('0.05')).quantize(Decimal('0.01'))
+        total = subtotal + fee
+        return Order.objects.create(
+            id=oid,
+            customer=c,
+            customer_name=c.full_name,
+            email=c.email,
+            phone=c.phone,
+            area=c.hall,
+            vendor=v,
+            vendor_name=v.name,
+            lines=[{'mealId': self.meal_a.id if v == self.vendor_a else self.meal_b.id, 'name': 'Dish', 'price': float(subtotal), 'qty': 1}],
+            subtotal=subtotal,
+            fee=fee,
+            total=total,
+            pickup_day='2026-12-01',
+            handoff_code='123456',
+            prep_stage=prep_stage,
+            prep_at=prep_at or {'accepted': 1700000000000},
+            meetup=meetup,
+            payment_status=payment_status,
+            settlement_status=settlement_status,
+            paid_at=paid_at,
+            cancelled_at=cancelled_at,
+            collected_at=collected_at,
+        )
+
+    def test_vendor_list_excludes_unpaid_states_and_includes_paid_states(self):
+        now = timezone.now()
+        o_unpaid = self._make_order('STW-PF-PEND', payment_status='pending')
+        o_failed = self._make_order('STW-PF-FAIL', payment_status='failed')
+        o_expired = self._make_order('STW-PF-EXP', payment_status='cancelled', cancelled_at=now, paid_at=None)
+        o_paid = self._make_order('STW-PF-PAID', payment_status='paid', paid_at=now)
+        o_released = self._make_order('STW-PF-REL', payment_status='released', paid_at=now, collected_at=now, prep_stage='collected', settlement_status='released')
+        o_refunded = self._make_order('STW-PF-REF', payment_status='refunded', paid_at=now, cancelled_at=now)
+        o_ref_pend = self._make_order('STW-PF-RFP', payment_status='refund_pending', paid_at=now, cancelled_at=now)
+        # Personal unpaid customer order placed by vendor_a at vendor_b
+        o_personal_unpaid = self._make_order('STW-PF-PERS', customer=self.vendor_a_user, vendor=self.vendor_b, payment_status='pending')
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.vendor_a_user)}')
+        r_scope = self.client.get('/api/orders/?scope=vendor')
+        self.assertEqual(r_scope.status_code, 200)
+        scope_ids = {o['id'] for o in r_scope.data}
+        for hidden in (o_unpaid, o_failed, o_expired, o_personal_unpaid):
+            self.assertNotIn(hidden.id, scope_ids, f'{hidden.id} leaked into vendor scoped list')
+        for visible in (o_paid, o_released, o_refunded, o_ref_pend):
+            self.assertIn(visible.id, scope_ids, f'{visible.id} missing from vendor scoped list')
+
+        # Default (unscoped) feed for a 'both' vendor still hides unpaid orders FOR their kitchen,
+        # while keeping their own personal unpaid customer order visible so they can pay/cancel it.
+        r_default = self.client.get('/api/orders/')
+        self.assertEqual(r_default.status_code, 200)
+        default_ids = {o['id'] for o in r_default.data}
+        for hidden in (o_unpaid, o_failed, o_expired):
+            self.assertNotIn(hidden.id, default_ids)
+        self.assertIn(o_personal_unpaid.id, default_ids)
+        for visible in (o_paid, o_released, o_refunded, o_ref_pend):
+            self.assertIn(visible.id, default_ids)
+
+    def test_vendor_direct_get_and_all_actions_on_unpaid_order_return_404(self):
+        now = timezone.now()
+        unpaid_variants = [
+            self._make_order('STW-PF-V1', payment_status='pending', meetup={'place': 'Gate', 'proposedBy': 'student', 'confirmedBy': ['student'], 'agreed': False}),
+            self._make_order('STW-PF-V2', payment_status='failed'),
+            self._make_order('STW-PF-V3', payment_status='cancelled', cancelled_at=now, paid_at=None),
+        ]
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.vendor_a_user)}')
+        for o in unpaid_variants:
+            self.assertEqual(self.client.get(f'/api/orders/{o.id}/').status_code, 404, f'GET leaked {o.id}')
+            self.assertEqual(self.client.post(f'/api/orders/{o.id}/prep/', {'stage': 'cooking'}, format='json').status_code, 404)
+            self.assertEqual(self.client.post(f'/api/orders/{o.id}/complete/', {'code': '123456'}, format='json').status_code, 404)
+            self.assertEqual(self.client.post(f'/api/orders/{o.id}/collection-nudge/', {}, format='json').status_code, 404)
+            self.assertEqual(self.client.post(f'/api/orders/{o.id}/meetup/propose/', {'place': 'Library'}, format='json').status_code, 404)
+            self.assertEqual(self.client.post(f'/api/orders/{o.id}/meetup/confirm/', {}, format='json').status_code, 404)
+            self.assertEqual(self.client.post(f'/api/orders/{o.id}/meetup/decline/', {}, format='json').status_code, 404)
+            self.assertEqual(self.client.post(f'/api/orders/{o.id}/messages/', {'text': 'Hello'}, format='json').status_code, 404)
+            self.assertEqual(self.client.post(f'/api/orders/{o.id}/cancel/', {}, format='json').status_code, 404)
+            self.assertEqual(
+                self.client.post('/api/support/cases/', {'type': 'late', 'orderId': o.id, 'description': 'Vendor probing unpaid order'}, format='json').status_code,
+                404,
+            )
+
+    def test_payouts_ledger_metrics_and_counts_exclude_unpaid_orders(self):
+        now = timezone.now()
+        self._make_order('STW-PF-L-P1', payment_status='pending', prep_stage='accepted', subtotal=Decimal('100.00'))
+        self._make_order('STW-PF-L-P2', payment_status='pending', prep_stage='ready', subtotal=Decimal('200.00'))
+        self._make_order('STW-PF-L-FL', payment_status='failed', prep_stage='accepted', subtotal=Decimal('300.00'))
+        self._make_order('STW-PF-L-CN', payment_status='cancelled', paid_at=None, cancelled_at=now, prep_stage='accepted', subtotal=Decimal('400.00'))
+        self._make_order('STW-PF-L-PAID', payment_status='paid', paid_at=now, prep_stage='ready', subtotal=Decimal('50.00'))
+        self._make_order('STW-PF-L-REL', payment_status='released', paid_at=now, collected_at=now, prep_stage='collected', settlement_status='released', subtotal=Decimal('25.00'))
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.vendor_a_user)}')
+        res = self.client.get('/api/payouts/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['held'], 50.0)
+        self.assertEqual(res.data['heldCount'], 1)
+        self.assertEqual(res.data['released'], 25.0)
+        self.assertEqual(res.data['releasedCount'], 1)
+        self.assertEqual(res.data['weekTotal'], 75.0)
+        self.assertEqual(res.data['inProgressCount'], 1)
+        self.assertEqual(res.data['readyCount'], 1)
+        self.assertEqual(res.data['newCount'], 0)
+
+    def test_owner_admin_and_cross_party_access_plus_old_unpaid_cancel(self):
+        # Create via real API so stock decrements
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer_a)}')
+        stock_before = Meal.objects.get(pk=self.meal_a.pk).left
+        r_create = self.client.post('/api/orders/', {
+            'lines': [{'mealId': self.meal_a.id, 'qty': 2}],
+            'area': 'Unity Hall',
+            'pickupDay': '2026-12-01',
+        }, format='json')
+        self.assertEqual(r_create.status_code, 201)
+        oid = r_create.data['id']
+        self.assertEqual(Meal.objects.get(pk=self.meal_a.pk).left, stock_before - 2)
+
+        # Age order past 120s (e.g. 10 minutes old, still within unpaid TTL)
+        Order.objects.filter(pk=oid).update(
+            created_at=timezone.now() - timedelta(minutes=10),
+            prep_at={'accepted': 1700000000000, '_internalFlag': True},
+        )
+
+        # Owning customer sees it and internal _ keys are stripped from prepAt
+        r_cust_list = self.client.get('/api/orders/')
+        self.assertIn(oid, [o['id'] for o in r_cust_list.data])
+        r_cust_det = self.client.get(f'/api/orders/{oid}/')
+        self.assertEqual(r_cust_det.status_code, 200)
+        self.assertNotIn('_internalFlag', r_cust_det.data['prepAt'])
+
+        # Admin sees unpaid order
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.admin)}')
+        self.assertIn(oid, [o['id'] for o in self.client.get('/api/orders/').data])
+        self.assertEqual(self.client.get(f'/api/orders/{oid}/').status_code, 200)
+
+        # Unrelated customer B and vendor B cannot see unpaid order
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer_b)}')
+        self.assertNotIn(oid, [o['id'] for o in self.client.get('/api/orders/').data])
+        self.assertEqual(self.client.get(f'/api/orders/{oid}/').status_code, 403)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.vendor_b_user)}')
+        self.assertNotIn(oid, [o['id'] for o in self.client.get('/api/orders/?scope=vendor').data])
+        self.assertEqual(self.client.get(f'/api/orders/{oid}/').status_code, 403)
+
+        # Owning customer cancels their 10-minute-old unpaid order -> allowed and restores stock once
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer_a)}')
+        r_can = self.client.post(f'/api/orders/{oid}/cancel/', {}, format='json')
+        self.assertEqual(r_can.status_code, 200)
+        self.assertEqual(r_can.data['payment']['status'], 'cancelled')
+        self.assertNotIn('_stockRestored', r_can.data['prepAt'])
+        self.assertEqual(Meal.objects.get(pk=self.meal_a.pk).left, stock_before)
+
 
 
 

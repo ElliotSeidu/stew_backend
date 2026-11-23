@@ -444,7 +444,8 @@ class SecurityAnalystAndKNUSTPolicyTests(TestCase):
         )
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.vendor_token}')
         res = self.client.post(f'/api/orders/{order.id}/complete/', {'code': '112233'}, format='json')
-        self.assertEqual(res.status_code, 400)
+        # Pay-first: vendor receives 404 (not 400) so unpaid order existence is hidden
+        self.assertEqual(res.status_code, 404)
         order.refresh_from_db()
         self.assertEqual(order.settlement_status, 'pending')
         self.assertNotEqual(order.prep_stage, 'collected')

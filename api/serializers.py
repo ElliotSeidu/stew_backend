@@ -119,7 +119,7 @@ class OrderSerializer(serializers.ModelSerializer):
     pickupDay = serializers.CharField(source='pickup_day')
     pickupSlot = serializers.CharField(source='pickup_slot')
     prepStage = serializers.CharField(source='prep_stage')
-    prepAt = serializers.JSONField(source='prep_at')
+    prepAt = serializers.SerializerMethodField()
     contactNote = serializers.CharField(source='contact_note', allow_blank=True)
     orderNote = serializers.CharField(source='order_note', allow_blank=True)
     collectedVia = serializers.CharField(source='collected_via', allow_blank=True, read_only=True)
@@ -155,6 +155,9 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_email(self, obj):
         return obj.email if self._is_owner_or_admin(obj) else None
+
+    def get_prepAt(self, obj):
+        return {k: v for k, v in (obj.prep_at or {}).items() if not str(k).startswith('_')}
 
     def get_reviewed(self, obj):
         # Use annotation from orders_view queryset when available (avoids N+1 on list views)

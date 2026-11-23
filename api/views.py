@@ -89,6 +89,16 @@ def _is_order_vendor_or_admin(user, order) -> bool:
     return _is_order_vendor(user, order) or is_platform_admin(user)
 
 
+def _hidden_from_vendor(user, order) -> bool:
+    """True when the caller is acting solely as the assigned vendor on an unpaid order."""
+    return bool(
+        _is_order_vendor(user, order)
+        and not _is_order_owner(user, order)
+        and not is_platform_admin(user)
+        and not order.is_vendor_visible
+    )
+
+
 def _inactive_vendor_response(user, vendor):
     """Returns a 403 Response if a non-admin caller operates on a suspended or missing kitchen."""
     if is_platform_admin(user):
@@ -1070,15 +1080,19 @@ def orders_view(request):
         if is_platform_admin(user):
             orders = Order.objects.select_related('vendor', 'customer').all().order_by('-created_at')
         elif scope == 'vendor' and (user.is_vendor or user.role in ['vendor', 'both']):
-            orders = Order.objects.select_related('vendor', 'customer').filter(vendor__user=user).order_by('-created_at')
+            orders = Order.vendor_visible(
+                Order.objects.select_related('vendor', 'customer').filter(vendor__user=user)
+            ).order_by('-created_at')
         elif scope == 'customer':
             orders = Order.objects.select_related('vendor', 'customer').filter(
                 models.Q(customer=user) | models.Q(email=user.email)
             ).order_by('-created_at')
         elif user.is_vendor or user.role in ['vendor', 'both']:
-            # Vendors see both orders for their kitchen and personal customer orders
+            # Vendors only see kitchen orders once payment is confirmed, plus their own customer orders
             orders = Order.objects.select_related('vendor', 'customer').filter(
-                models.Q(vendor__user=user) | models.Q(customer=user) | models.Q(email=user.email)
+                (models.Q(vendor__user=user) & Order.vendor_visible_q())
+                | models.Q(customer=user)
+                | models.Q(email=user.email)
             ).distinct().order_by('-created_at')
         else:
             orders = Order.objects.select_related('vendor', 'customer').filter(
@@ -1220,6 +1234,8 @@ def order_detail_view(request, pk):
 
     if not _is_order_participant(request.user, order):
         return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+    if _hidden_from_vendor(request.user, order):
+        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
     return Response(OrderSerializer(order, context={'request': request}).data)
 
@@ -1243,19 +1259,23 @@ def cancel_order_view(request, pk):
         is_order_vendor = _is_order_vendor(user, order)
         if not (is_owner or is_order_vendor or is_platform_admin(user)):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if _hidden_from_vendor(user, order):
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
         if order.cancelled_at:
             return Response({'message': 'This order is already cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
         if order.collected_at or order.prep_stage == 'collected':
             return Response({'message': 'This order was already handed over and cannot be cancelled. Open a support case instead.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # If student, enforce time window and prep stage
+        # If student, enforce 120s window and prep stage once payment is confirmed;
+        # unpaid orders remain cancellable until paid or expired.
         if is_owner and not (is_platform_admin(user) or is_order_vendor):
-            if order.prep_stage != 'accepted':
-                return Response({'message': 'The kitchen has already started on this order.'}, status=status.HTTP_400_BAD_REQUEST)
-            elapsed_seconds = (dj_timezone.now() - order.created_at).total_seconds()
-            if elapsed_seconds > 120:
-                return Response({'message': 'This order can no longer be cancelled (120s limit passed).'}, status=status.HTTP_400_BAD_REQUEST)
+            if order.is_vendor_visible:
+                if order.prep_stage != 'accepted':
+                    return Response({'message': 'The kitchen has already started on this order.'}, status=status.HTTP_400_BAD_REQUEST)
+                elapsed_seconds = (dj_timezone.now() - order.created_at).total_seconds()
+                if elapsed_seconds > 120:
+                    return Response({'message': 'This order can no longer be cancelled (120s limit passed).'}, status=status.HTTP_400_BAD_REQUEST)
 
         order.cancelled_at = dj_timezone.now()
         was_paid = order.payment_status in ['paid', 'released']
@@ -1597,9 +1617,9 @@ def payouts_ledger_view(request):
 
     orders_query = Order.objects.filter(cancelled_at__isnull=True)
     if not is_platform_admin(user):
-        orders_query = orders_query.filter(vendor=vendor)
+        orders_query = Order.vendor_visible(orders_query.filter(vendor=vendor))
 
-    paid_qs = orders_query.filter(payment_status__in=['paid', 'released'])
+    paid_qs = Order.vendor_visible(orders_query).filter(payment_status__in=['paid', 'released'])
     held_agg = paid_qs.filter(payment_status='paid').exclude(settlement_status='released').aggregate(
         held_sum=Sum('subtotal'), held_count=Count('id')
     )
@@ -1619,7 +1639,7 @@ def payouts_ledger_view(request):
             day_totals[label] = round(float(row['day_sum'] or 0), 2)
     sales_by_day = [{'d': d, 'v': day_totals[d]} for d in _ORDERED_DAY_KEYS]
 
-    stage_counts = orders_query.aggregate(
+    stage_counts = paid_qs.aggregate(
         in_progress=Count('id', filter=~models.Q(prep_stage='collected')),
         ready=Count('id', filter=models.Q(prep_stage='ready')),
         new=Count('id', filter=models.Q(prep_stage='accepted')),
@@ -1732,6 +1752,8 @@ def propose_meetup_view(request, pk):
 
         if not _is_order_participant(request.user, order):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if _hidden_from_vendor(request.user, order):
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         terminal = _terminal_order_response(order)
         if terminal:
             return terminal
@@ -1767,6 +1789,8 @@ def confirm_meetup_view(request, pk):
 
         if not _is_order_participant(request.user, order):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if _hidden_from_vendor(request.user, order):
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         terminal = _terminal_order_response(order)
         if terminal:
             return terminal
@@ -1802,6 +1826,8 @@ def decline_meetup_view(request, pk):
 
         if not _is_order_participant(request.user, order):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if _hidden_from_vendor(request.user, order):
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         terminal = _terminal_order_response(order)
         if terminal:
             return terminal
@@ -1832,6 +1858,8 @@ def send_order_message_view(request, pk):
 
         if not _is_order_participant(request.user, order):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if _hidden_from_vendor(request.user, order):
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         terminal = _terminal_order_response(order)
         if terminal:
             return terminal
@@ -1875,6 +1903,8 @@ def set_prep_stage_view(request, pk):
 
         if not _is_order_vendor_or_admin(request.user, order):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if not is_platform_admin(request.user) and not order.is_vendor_visible:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         blocked = _inactive_vendor_response(request.user, order.vendor)
         if blocked:
             return blocked
@@ -1949,6 +1979,8 @@ def complete_by_code_view(request, pk):
 
         if not _is_order_vendor_or_admin(request.user, order):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if not is_platform_admin(request.user) and not order.is_vendor_visible:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         blocked = _inactive_vendor_response(request.user, order.vendor)
         if blocked:
             return blocked
@@ -2002,6 +2034,8 @@ def collection_nudge_view(request, pk):
 
         if not _is_order_vendor_or_admin(request.user, order):
             return Response({'message': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if not is_platform_admin(request.user) and not order.is_vendor_visible:
+            return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         blocked = _inactive_vendor_response(request.user, order.vendor)
         if blocked:
             return blocked
@@ -2213,7 +2247,7 @@ def payout_batches_view(request):
 
     with transaction.atomic():
         locked_ids = list(
-            Order.objects.select_for_update()
+            Order.vendor_visible(Order.objects.select_for_update())
             .filter(
                 settlement_status='released',
                 payout_batch_id__isnull=True,
@@ -2275,12 +2309,14 @@ def support_cases_view(request):
     raw_order_id = str(data.get('order') or data.get('orderId') or '').strip()[:64]
     raw_vendor = str(data.get('vendor') or '').strip()
     if raw_order_id:
-        order_obj = Order.objects.filter(id=raw_order_id).first()
+        order_obj = Order.objects.select_related('vendor', 'customer').filter(id=raw_order_id).first()
         if not order_obj:
             return Response({'message': 'Order not found.'}, status=status.HTTP_404_NOT_FOUND)
         # A student may only attach orders they are part of — no probing other orders
         if not _is_order_participant(user, order_obj):
             return Response({'message': 'You can only report your own orders.'}, status=status.HTTP_403_FORBIDDEN)
+        if _hidden_from_vendor(user, order_obj):
+            return Response({'message': 'Order not found.'}, status=status.HTTP_404_NOT_FOUND)
         if order_obj.payment_status in ('refunded', 'refund_pending', 'cancelled'):
             return Response({'message': 'This order has already been refunded or cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
         if SupportCase.objects.filter(user=user, order=escape(raw_order_id)).exists():

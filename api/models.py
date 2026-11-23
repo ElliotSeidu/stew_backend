@@ -178,6 +178,28 @@ class Order(models.Model):
             models.CheckConstraint(condition=models.Q(settlement_net__gte=Decimal('0.00')), name='order_settlement_net_non_negative'),
         ]
 
+    VENDOR_VISIBLE_PAYMENT_STATUSES = ('paid', 'released', 'refund_pending', 'refunded')
+
+    @classmethod
+    def vendor_visible_q(cls, prefix: str = '') -> models.Q:
+        """Canonical filter: an order is visible to its vendor only after payment was received."""
+        return (
+            models.Q(**{f'{prefix}paid_at__isnull': False})
+            | models.Q(**{f'{prefix}payment_status__in': cls.VENDOR_VISIBLE_PAYMENT_STATUSES})
+        )
+
+    @classmethod
+    def vendor_visible(cls, queryset=None):
+        qs = queryset if queryset is not None else cls.objects.all()
+        return qs.filter(cls.vendor_visible_q())
+
+    @property
+    def is_vendor_visible(self) -> bool:
+        return bool(
+            self.paid_at is not None
+            or self.payment_status in self.VENDOR_VISIBLE_PAYMENT_STATUSES
+        )
+
     def __str__(self):
         return f"{self.id} ({self.vendor_name}) - {self.total} GHS"
 
