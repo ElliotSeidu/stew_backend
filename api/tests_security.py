@@ -5561,6 +5561,58 @@ class BetaEmailAllowlistTests(TestCase):
             self.assertFalse(is_allowed_email('friend@gmail.com'))
 
 
+class PromoteAdminCommandTests(TestCase):
+    def setUp(self):
+        self.active_user = User.objects.create_user(
+            email='promo.active@st.knust.edu.gh', password='Password123',
+            full_name='Promo Active', reference_id='20991001', phone='0242000001',
+            hall='Unity Hall', verified=True, is_active=True, is_admin=False, role='customer',
+        )
+        self.unverified_user = User.objects.create_user(
+            email='promo.unverified@st.knust.edu.gh', password='Password123',
+            full_name='Promo Unverified', reference_id='20991002', phone='0242000002',
+            hall='Unity Hall', verified=False, is_active=True, is_admin=False, role='customer',
+        )
+        self.inactive_user = User.objects.create_user(
+            email='promo.inactive@st.knust.edu.gh', password='Password123',
+            full_name='Promo Inactive', reference_id='20991003', phone='0242000003',
+            hall='Unity Hall', verified=True, is_active=False, is_admin=False, role='customer',
+        )
+
+    def test_promote_admin_promotes_active_verified_user_and_audits(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from api.models import AuditEntry
+
+        out = StringIO()
+        call_command('promote_admin', email='  PROMO.ACTIVE@ST.KNUST.EDU.GH  ', stdout=out)
+        self.active_user.refresh_from_db()
+        self.assertTrue(self.active_user.is_admin)
+        self.assertEqual(self.active_user.role, 'admin')
+        self.assertTrue(
+            AuditEntry.objects.filter(
+                action='admin_promoted',
+                entity_id=str(self.active_user.id),
+            ).exists()
+        )
+        output = out.getvalue()
+        self.assertIn('promo.active@st.knust.edu.gh', output)
+        self.assertNotIn('Password', output)
+        self.assertNotIn('SECRET', output)
+
+    def test_promote_admin_refuses_unknown_unverified_and_inactive(self):
+        from django.core.management import CommandError, call_command
+
+        for email in (
+            'nobody@st.knust.edu.gh',
+            'promo.unverified@st.knust.edu.gh',
+            'promo.inactive@st.knust.edu.gh',
+        ):
+            with self.assertRaises(CommandError):
+                call_command('promote_admin', email=email)
+
+
+
 
 
 
