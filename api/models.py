@@ -309,3 +309,15 @@ class RateLimitBucket(models.Model):
 
     class Meta:
         ordering = ['-updated_at']
+
+
+class FailedLoginEvent(models.Model):
+    email_attempted = models.CharField(max_length=254, blank=True, default='', db_index=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True, db_index=True)
+    user_agent = models.CharField(max_length=255, blank=True, default='')
+    reason = models.CharField(max_length=64, db_index=True)
+    endpoint = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']

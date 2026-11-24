@@ -4685,6 +4685,107 @@ class AdminConversationsTests(TestCase):
         self.assertEqual(audit.extra.get('reason'), 'dispute')
 
 
+class FailedLoginTrackingTests(TestCase):
+    def setUp(self):
+        from api.models import User
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+        self.user = User.objects.create_user(
+            email='victim_fl@st.knust.edu.gh',
+            full_name='Target Student',
+            phone='0247776655',
+            reference_id='20920001',
+            verified=True,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        self.inactive = User.objects.create_user(
+            email='inactive_fl@st.knust.edu.gh',
+            full_name='Inactive Student',
+            phone='0247776656',
+            reference_id='20920002',
+            verified=True,
+            is_active=False,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        self.admin = User.objects.create_user(
+            email='admin_fl@st.knust.edu.gh',
+            full_name='Sec Admin',
+            phone='0200000003',
+            reference_id='20920003',
+            verified=True,
+            role='admin',
+            account_type='customer',
+            is_admin=True,
+            password='Password123',
+        )
+
+    def test_failed_logins_recorded_across_auth_paths_and_capped_per_ip(self):
+        from api.models import FailedLoginEvent
+        # 1. Wrong password
+        self.client.post('/api/auth/login/', {'email': self.user.email, 'password': 'WrongPassword'}, format='json')
+        # 2. Unknown email
+        self.client.post('/api/auth/login/', {'email': 'nobody_fl@st.knust.edu.gh', 'password': 'Password123'}, format='json')
+        # 3. Inactive account
+        self.client.post('/api/auth/login/', {'email': self.inactive.email, 'password': 'Password123'}, format='json')
+        # 4. Bad login code
+        self.client.post('/api/auth/login-code/verify/', {'email': self.user.email, 'code': '000000'}, format='json')
+
+        self.assertGreaterEqual(FailedLoginEvent.objects.count(), 4)
+        reasons = set(FailedLoginEvent.objects.values_list('reason', flat=True))
+        self.assertTrue(len(reasons) >= 2, f'Expected distinct failure reasons, got {reasons}')
+
+        # IP hourly cap prevents DB flooding
+        FailedLoginEvent.objects.all().delete()
+        with self.settings(FAILED_LOGIN_IP_HOURLY_CAP=2):
+            for i in range(5):
+                _RATE_LIMIT_CACHE.clear()
+                self.client.post('/api/auth/login/', {'email': self.user.email, 'password': f'Wrong{i}'}, format='json')
+            self.assertEqual(FailedLoginEvent.objects.count(), 2)
+
+    def test_admin_failed_logins_endpoint_and_cleanup_retention(self):
+        from datetime import timedelta
+        from io import StringIO
+        from django.core.management import call_command
+        from django.utils import timezone
+        from api.models import FailedLoginEvent
+
+        FailedLoginEvent.objects.create(
+            email_attempted='victim_fl@st.knust.edu.gh',
+            ip_address='10.0.0.5',
+            reason='invalid_credentials',
+            endpoint='/api/auth/login/',
+        )
+        old_evt = FailedLoginEvent.objects.create(
+            email_attempted='old_fl@st.knust.edu.gh',
+            ip_address='10.0.0.6',
+            reason='invalid_credentials',
+            endpoint='/api/auth/login/',
+        )
+        FailedLoginEvent.objects.filter(pk=old_evt.pk).update(created_at=timezone.now() - timedelta(days=35))
+
+        # Non-admin -> 403
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.user)}')
+        self.assertEqual(self.client.get('/api/admin/security/failed-logins/').status_code, 403)
+
+        # Admin -> 200 with summary & filters
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.admin)}')
+        res = self.client.get('/api/admin/security/failed-logins/?email=victim_fl')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('summary', res.data)
+        self.assertEqual(len(res.data['results']), 1)
+
+        # cleanup_rate_limits purges > 30d rows, keeps recent
+        out = StringIO()
+        call_command('cleanup_rate_limits', stdout=out)
+        self.assertFalse(FailedLoginEvent.objects.filter(pk=old_evt.pk).exists())
+        self.assertTrue(FailedLoginEvent.objects.filter(email_attempted='victim_fl@st.knust.edu.gh').exists())
+
+
+
 
 
 

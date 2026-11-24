@@ -29,7 +29,8 @@ def escape(value) -> str:
 from api.authentication import JWTAuthentication, IsStudentUser, IsVendorUser, IsAdminUser, is_platform_admin
 from api.models import (
     User, Vendor, Meal, Order, Review, Compliance,
-    PayoutBatch, SupportCase, PushSubscription, AuditEntry, AnalyticsEvent
+    PayoutBatch, SupportCase, PushSubscription, AuditEntry, AnalyticsEvent,
+    FailedLoginEvent,
 )
 from api.serializers import (
     UserSerializer, RegisterSerializer, VendorSerializer,
@@ -485,6 +486,23 @@ def resend_code_view(request):
     return Response({'ok': True})
 
 
+def _record_failed_login(request, email_attempted: str, reason: str, endpoint: str) -> None:
+    """Record a failed auth attempt in FailedLoginEvent, bounded by FAILED_LOGIN_IP_HOURLY_CAP."""
+    ip = get_client_ip(request)
+    cap = max(1, int(getattr(settings, 'FAILED_LOGIN_IP_HOURLY_CAP', 60)))
+    one_hour_ago = dj_timezone.now() - timedelta(hours=1)
+    if FailedLoginEvent.objects.filter(ip_address=ip, created_at__gte=one_hour_ago).count() >= cap:
+        return
+    ua = str((getattr(request, 'META', None) or {}).get('HTTP_USER_AGENT') or '')[:255]
+    FailedLoginEvent.objects.create(
+        email_attempted=str(email_attempted or '').strip().lower()[:254],
+        ip_address=ip,
+        user_agent=ua,
+        reason=str(reason or 'unknown')[:64],
+        endpoint=str(endpoint or '')[:64],
+    )
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_view(request):
@@ -498,6 +516,7 @@ def login_view(request):
     try:
         email = clean_knust_email(raw_email)
     except ValidationError:
+        _record_failed_login(request, raw_email, 'invalid_email_domain', '/api/auth/login/')
         return Response({'message': 'Only KNUST student emails (@st.knust.edu.gh) are allowed.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not check_rate_limit(f"login_{email}", limit=10, window_seconds=300):
@@ -506,12 +525,15 @@ def login_view(request):
     try:
         user = User.objects.get(email=email)
     except User.DoesNotExist:
+        _record_failed_login(request, email, 'unknown_account', '/api/auth/login/')
         return Response({'message': 'Incorrect email or password'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not user.check_password(password):
+        _record_failed_login(request, email, 'invalid_credentials', '/api/auth/login/')
         return Response({'message': 'Incorrect email or password'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not user.is_active:
+        _record_failed_login(request, email, 'inactive_account', '/api/auth/login/')
         return Response({'message': 'This account has been suspended. Contact support.'}, status=status.HTTP_403_FORBIDDEN)
 
     if not user.verified:
@@ -565,6 +587,7 @@ def login_with_code_view(request):
     try:
         email = clean_knust_email(raw_email)
     except ValidationError:
+        _record_failed_login(request, raw_email, 'invalid_email_domain', '/api/auth/login-code/verify/')
         return Response({'message': 'Only KNUST student emails (@st.knust.edu.gh) are permitted.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not check_rate_limit(f"login_code_try_{email}", limit=5, window_seconds=600):
@@ -574,6 +597,7 @@ def login_with_code_view(request):
     try:
         user = User.objects.get(email=email, is_active=True)
     except User.DoesNotExist:
+        _record_failed_login(request, email, 'unknown_or_inactive_account', '/api/auth/login-code/verify/')
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not user.verified:
@@ -584,6 +608,7 @@ def login_with_code_view(request):
         code_valid = verify_hashed_token(code, user.login_code_hash)
 
     if not code_valid:
+        _record_failed_login(request, email, 'invalid_login_code', '/api/auth/login-code/verify/')
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
     # Invalidate code — single-use enforcement
@@ -650,6 +675,7 @@ def reset_password_view(request):
     try:
         user = User.objects.get(email=email, is_active=True)
     except User.DoesNotExist:
+        _record_failed_login(request, email, 'invalid_reset_code', '/api/auth/reset-password/')
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
     code_valid = False
@@ -657,6 +683,7 @@ def reset_password_view(request):
         code_valid = verify_hashed_token(code, user.reset_code_hash)
 
     if not code_valid:
+        _record_failed_login(request, email, 'invalid_reset_code', '/api/auth/reset-password/')
         return Response({'message': 'Invalid or expired code'}, status=status.HTTP_400_BAD_REQUEST)
 
     user.set_password(new_password)
@@ -2740,4 +2767,78 @@ def admin_conversation_messages_view(request, pk):
         'vendorName': order.vendor_name,
         'reason': reason,
         'messages': list(order.messages or []),
+    })
+
+
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAdminUser])
+def admin_failed_logins_view(request):
+    """Admin-only failed login event log with filters, 24h summary, and pagination."""
+    qs = FailedLoginEvent.objects.all().order_by('-created_at')
+    email_q = str(request.query_params.get('email') or '').strip()[:100]
+    ip_q = str(request.query_params.get('ip') or '').strip()[:64]
+    reason_q = str(request.query_params.get('reason') or '').strip()[:64]
+    since_hours = request.query_params.get('sinceHours')
+
+    if email_q:
+        qs = qs.filter(email_attempted__icontains=email_q)
+    if ip_q:
+        qs = qs.filter(ip_address__icontains=ip_q)
+    if reason_q:
+        qs = qs.filter(reason=reason_q)
+    if since_hours is not None and str(since_hours).strip() != '':
+        try:
+            hrs = max(1, int(since_hours))
+            qs = qs.filter(created_at__gte=dj_timezone.now() - timedelta(hours=hrs))
+        except (TypeError, ValueError):
+            pass
+
+    since_24h = dj_timezone.now() - timedelta(hours=24)
+    recent_24h = FailedLoginEvent.objects.filter(created_at__gte=since_24h)
+    total_24h = recent_24h.count()
+    unique_ips_24h = recent_24h.exclude(ip_address__isnull=True).values('ip_address').distinct().count()
+    top_emails = list(
+        recent_24h.exclude(email_attempted='')
+        .values('email_attempted')
+        .annotate(count=Count('id'))
+        .order_by('-count')[:5]
+    )
+
+    try:
+        limit = min(max(int(request.query_params.get('limit', 50)), 1), 100)
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = max(int(request.query_params.get('offset', 0)), 0)
+    except (TypeError, ValueError):
+        offset = 0
+
+    total = qs.count()
+    rows = qs[offset:offset + limit]
+    results = [
+        {
+            'id': e.id,
+            'emailAttempted': e.email_attempted,
+            'ipAddress': e.ip_address,
+            'userAgent': e.user_agent,
+            'reason': e.reason,
+            'endpoint': e.endpoint,
+            'createdAt': int(e.created_at.timestamp() * 1000) if e.created_at else None,
+        }
+        for e in rows
+    ]
+    return Response({
+        'summary': {
+            'total24h': total_24h,
+            'uniqueIps24h': unique_ips_24h,
+            'topTargetedEmails': [
+                {'email': item['email_attempted'], 'count': item['count']}
+                for item in top_emails
+            ],
+        },
+        'results': results,
+        'count': total,
+        'hasMore': (offset + len(results)) < total,
+        'nextOffset': (offset + len(results)) if (offset + len(results)) < total else None,
     })

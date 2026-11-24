@@ -3,21 +3,21 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from api.models import RateLimitBucket
+from api.models import FailedLoginEvent, RateLimitBucket
 
 # Longest rate-limit window used across api/views.py (3600s for register/reset/support)
 LONGEST_RATE_LIMIT_WINDOW_SECONDS = 3600
 REVOKED_JWT_PREFIX = 'jwt_revoked_'
 
 
-def _delete_in_batches(queryset, batch_size: int) -> int:
-    """Deletes matching RateLimitBucket rows in bounded batches to avoid table-wide locks."""
+def _delete_in_batches(queryset, batch_size: int, model=RateLimitBucket, pk_field: str = 'key') -> int:
+    """Deletes matching rows in bounded batches to avoid table-wide locks."""
     total_deleted = 0
     while True:
-        batch_keys = list(queryset.order_by('key').values_list('key', flat=True)[:batch_size])
+        batch_keys = list(queryset.order_by(pk_field).values_list(pk_field, flat=True)[:batch_size])
         if not batch_keys:
             break
-        deleted, _ = RateLimitBucket.objects.filter(key__in=batch_keys).delete()
+        deleted, _ = model.objects.filter(**{f'{pk_field}__in': batch_keys}).delete()
         total_deleted += deleted
     return total_deleted
 
@@ -59,8 +59,14 @@ class Command(BaseCommand):
         rl_deleted = _delete_in_batches(rl_qs, batch_size)
         rev_deleted = _delete_in_batches(rev_qs, batch_size)
 
+        retention_days = max(1, int(getattr(settings, 'FAILED_LOGIN_RETENTION_DAYS', 30)))
+        fl_cutoff = now - timedelta(days=retention_days)
+        fl_qs = FailedLoginEvent.objects.filter(created_at__lt=fl_cutoff)
+        fl_deleted = _delete_in_batches(fl_qs, batch_size, model=FailedLoginEvent, pk_field='id')
+
         self.stdout.write(
             self.style.SUCCESS(
-                f'Cleaned {rl_deleted} expired rate-limit bucket(s) and {rev_deleted} expired JWT revocation(s).'
+                f'Cleaned {rl_deleted} expired rate-limit bucket(s), {rev_deleted} expired JWT revocation(s), '
+                f'and {fl_deleted} failed login event(s) older than {retention_days} day(s).'
             )
         )

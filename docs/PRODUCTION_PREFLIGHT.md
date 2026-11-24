@@ -368,7 +368,7 @@ Before cutover, verify `TRUSTED_PROXY_COUNT` live on staging with two client dev
 ```
 
 - Deletions execute in `1,000`-row PK batches (`order_by('key')[:batch_size]`) so PostgreSQL autovacuum/MVCC stays smooth with zero long table locks.
-- Rate-limit counters older than `3600s + margin_seconds` (`2h`) and revocation rows older than `JWT_ACCESS_TOKEN_LIFETIME_HOURS + margin_seconds` (`13h` at default `12h`) are purged.
+- Rate-limit counters older than `3600s + margin_seconds` (`2h`), revocation rows older than `JWT_ACCESS_TOKEN_LIFETIME_HOURS + margin_seconds` (`13h` at default `12h`), and `FailedLoginEvent` rows older than `FAILED_LOGIN_RETENTION_DAYS` (`30` days default) are purged.
 
 ---
 
