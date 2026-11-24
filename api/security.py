@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import ipaddress
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from django.conf import settings
@@ -263,3 +264,17 @@ class ConfigurableUserRateThrottle(UserRateThrottle):
         if val is not None:
             return f"{max(1, int(val))}/min"
         return super().get_rate()
+
+
+_PHONE_RE = re.compile(
+    r'(?:\+?233[\s\-]*(?:\(0\)[\s\-]*)?|(?<!\d)0)\d(?:[\s\-]*\d){8}(?!\d)'
+    r'|(?<!\d)\d(?:[\s\-]*\d){8,}(?!\d)'
+)
+
+
+def mask_phone_numbers(text: str) -> tuple[str, bool]:
+    """Mask Ghana phone numbers and 9+ digit sequences to [phone hidden]."""
+    if not text:
+        return text or '', False
+    masked, count = _PHONE_RE.subn('[phone hidden]', str(text))
+    return masked, count > 0

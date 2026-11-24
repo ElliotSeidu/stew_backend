@@ -1951,7 +1951,11 @@ def send_order_message_view(request, pk):
         })
         order.messages = messages
         order.save(update_fields=['messages'])
-    return Response(OrderSerializer(order, context={'request': request}).data)
+    from api.security import mask_phone_numbers
+    _, phone_masked = mask_phone_numbers(text)
+    payload = OrderSerializer(order, context={'request': request}).data
+    payload['phoneMasked'] = phone_masked
+    return Response(payload)
 
 
 @api_view(['POST'])

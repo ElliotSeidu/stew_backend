@@ -4420,6 +4420,145 @@ class NoIdentityDocumentTests(TestCase):
         self.assertEqual(entry.extra.get('keep'), 'ok')
 
 
+class PhoneEmailPrivacyTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from django.utils import timezone
+        from api.models import User, Vendor, Meal, Order
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+        self.customer = User.objects.create_user(
+            email='cust_priv@st.knust.edu.gh',
+            full_name='Privacy Customer',
+            phone='0249998877',
+            reference_id='20900001',
+            verified=True,
+            role='student',
+            account_type='customer',
+            password='Password123',
+        )
+        self.vendor_user = User.objects.create_user(
+            email='vend_priv@st.knust.edu.gh',
+            full_name='Privacy Vendor',
+            phone='0551112233',
+            payout='0551112233',
+            reference_id='20900002',
+            verified=True,
+            role='vendor',
+            is_vendor=True,
+            account_type='vendor',
+            password='Password123',
+        )
+        self.admin = User.objects.create_user(
+            email='admin_priv@st.knust.edu.gh',
+            full_name='Privacy Admin',
+            phone='0200000001',
+            reference_id='20900003',
+            verified=True,
+            role='admin',
+            account_type='customer',
+            is_admin=True,
+            password='Password123',
+        )
+        self.vendor = Vendor.objects.create(
+            id='v_priv1',
+            user=self.vendor_user,
+            name='Privacy Kitchen',
+            hall='Legon Hall',
+            active=True,
+            open=True,
+        )
+        self.meal = Meal.objects.create(
+            id='m_priv1',
+            vendor=self.vendor,
+            name='Jollof Special',
+            price=Decimal('45.00'),
+            on=True,
+            left=10,
+        )
+        self.order = Order.objects.create(
+            id='STW-PRIV1',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            area='Legon Hall',
+            pickup_day='Today',
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'qty': 1, 'price': 45.0}],
+            subtotal=Decimal('45.00'),
+            fee=Decimal('2.25'),
+            total=Decimal('47.25'),
+            payment_status='paid',
+            paid_at=timezone.now(),
+            phone='0249998877',
+            email='cust_priv@st.knust.edu.gh',
+            order_note='Call me on 024 999 8877 when ready',
+            contact_note='Alt: +233551112233',
+            meetup={'place': 'Gate', 'note': 'Reach 123456789'},
+            messages=[{'from': 'customer', 'text': 'My number is 050-111-2222', 'at': 1700000000000}],
+        )
+
+    def test_vendor_never_sees_customer_phone_or_email(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.vendor_user)}')
+        list_res = self.client.get('/api/orders/')
+        self.assertEqual(list_res.status_code, 200)
+        orders = list_res.data.get('results', list_res.data) if isinstance(list_res.data, dict) else list_res.data
+        self.assertEqual(len(orders), 1)
+        row_str = str(orders[0])
+        self.assertNotIn('0249998877', row_str)
+        self.assertNotIn('cust_priv@st.knust.edu.gh', row_str)
+        self.assertIsNone(orders[0].get('phone'))
+        self.assertIsNone(orders[0].get('email'))
+
+        det_res = self.client.get(f'/api/orders/{self.order.id}/')
+        self.assertEqual(det_res.status_code, 200)
+        det_str = str(det_res.data)
+        self.assertNotIn('0249998877', det_str)
+        self.assertNotIn('cust_priv@st.knust.edu.gh', det_str)
+
+    def test_customer_never_sees_vendor_phone_email_or_payout(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+        for url in ['/api/vendors/', f'/api/vendors/{self.vendor.id}/', '/api/meals/', '/api/orders/', f'/api/orders/{self.order.id}/']:
+            res = self.client.get(url)
+            self.assertEqual(res.status_code, 200)
+            body_str = str(res.data)
+            self.assertNotIn('0551112233', body_str, f'Leaked vendor phone/payout on {url}')
+            self.assertNotIn('vend_priv@st.knust.edu.gh', body_str, f'Leaked vendor email on {url}')
+
+    def test_phone_numbers_masked_in_chat_and_notes_for_non_admins_only(self):
+        # Customer & vendor see masked phones
+        for actor in (self.customer, self.vendor_user):
+            self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(actor)}')
+            res = self.client.get(f'/api/orders/{self.order.id}/')
+            self.assertEqual(res.status_code, 200)
+            self.assertIn('[phone hidden]', res.data['orderNote'])
+            self.assertIn('[phone hidden]', res.data['contactNote'])
+            self.assertIn('[phone hidden]', res.data['meetup']['note'])
+            self.assertIn('[phone hidden]', res.data['messages'][0]['text'])
+            self.assertNotIn('050-111-2222', str(res.data['messages']))
+
+        # Sending a message with a phone number returns phoneMasked=True
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+        msg_res = self.client.post(
+            f'/api/orders/{self.order.id}/messages/',
+            {'text': 'Ping me at 0241234567 please'},
+            format='json',
+        )
+        self.assertEqual(msg_res.status_code, 200)
+        self.assertTrue(msg_res.data.get('phoneMasked'))
+        self.assertIn('[phone hidden]', msg_res.data['messages'][-1]['text'])
+
+        # Admin sees unmasked original
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.admin)}')
+        adm_res = self.client.get(f'/api/orders/{self.order.id}/')
+        self.assertEqual(adm_res.status_code, 200)
+        self.assertEqual(adm_res.data.get('phone'), '0249998877')
+        self.assertEqual(adm_res.data.get('email'), 'cust_priv@st.knust.edu.gh')
+        self.assertIn('050-111-2222', adm_res.data['messages'][0]['text'])
+        self.assertIn('0241234567', adm_res.data['messages'][-1]['text'])
+
+
+
 
 
 

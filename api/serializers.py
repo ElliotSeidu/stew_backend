@@ -127,8 +127,11 @@ class OrderSerializer(serializers.ModelSerializer):
     pickupSlot = serializers.CharField(source='pickup_slot')
     prepStage = serializers.CharField(source='prep_stage')
     prepAt = serializers.SerializerMethodField()
-    contactNote = serializers.CharField(source='contact_note', allow_blank=True)
-    orderNote = serializers.CharField(source='order_note', allow_blank=True)
+    contactNote = serializers.SerializerMethodField()
+    orderNote = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
+    meetup = serializers.SerializerMethodField()
+    messages = serializers.SerializerMethodField()
     collectedVia = serializers.CharField(source='collected_via', allow_blank=True, read_only=True)
     payoutBatchId = serializers.CharField(source='payout_batch_id', allow_null=True, read_only=True)
     payment = serializers.SerializerMethodField()
@@ -160,8 +163,56 @@ class OrderSerializer(serializers.ModelSerializer):
             or is_platform_admin(request.user)
         )
 
+    def _is_admin_viewer(self) -> bool:
+        request = self.context.get('request')
+        return bool(request and hasattr(request, 'user') and request.user.is_authenticated and is_platform_admin(request.user))
+
     def get_email(self, obj):
         return obj.email if self._is_owner_or_admin(obj) else None
+
+    def get_phone(self, obj):
+        return obj.phone if self._is_owner_or_admin(obj) else None
+
+    def get_contactNote(self, obj):
+        raw = obj.contact_note or ''
+        if self._is_admin_viewer():
+            return raw
+        from api.security import mask_phone_numbers
+        return mask_phone_numbers(raw)[0]
+
+    def get_orderNote(self, obj):
+        raw = obj.order_note or ''
+        if self._is_admin_viewer():
+            return raw
+        from api.security import mask_phone_numbers
+        return mask_phone_numbers(raw)[0]
+
+    def get_meetup(self, obj):
+        if not obj.meetup or self._is_admin_viewer():
+            return obj.meetup
+        if not isinstance(obj.meetup, dict):
+            return obj.meetup
+        from api.security import mask_phone_numbers
+        out = {}
+        for k, v in obj.meetup.items():
+            out[k] = mask_phone_numbers(v)[0] if isinstance(v, str) else v
+        return out
+
+    def get_messages(self, obj):
+        msgs = obj.messages or []
+        if not msgs or self._is_admin_viewer():
+            return msgs
+        from api.security import mask_phone_numbers
+        out = []
+        for m in msgs:
+            if isinstance(m, dict):
+                copy_m = dict(m)
+                if isinstance(copy_m.get('text'), str):
+                    copy_m['text'] = mask_phone_numbers(copy_m['text'])[0]
+                out.append(copy_m)
+            else:
+                out.append(m)
+        return out
 
     def get_prepAt(self, obj):
         return {k: v for k, v in (obj.prep_at or {}).items() if not str(k).startswith('_')}
