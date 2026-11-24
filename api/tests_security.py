@@ -4785,6 +4785,258 @@ class FailedLoginTrackingTests(TestCase):
         self.assertTrue(FailedLoginEvent.objects.filter(email_attempted='victim_fl@st.knust.edu.gh').exists())
 
 
+class CancellationPolicyAndReviewTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from api.models import User, Vendor, Meal
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+        self.customer = User.objects.create_user(
+            email='cust_pol@st.knust.edu.gh',
+            full_name='Policy Customer',
+            phone='0246665544',
+            reference_id='20930001',
+            verified=True,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        self.vendor_user = User.objects.create_user(
+            email='vend_pol@st.knust.edu.gh',
+            full_name='Policy Vendor',
+            phone='0553334455',
+            reference_id='20930002',
+            verified=True,
+            role='vendor',
+            is_vendor=True,
+            account_type='vendor',
+            password='Password123',
+        )
+        self.vendor = Vendor.objects.create(
+            id='v_pol1',
+            user=self.vendor_user,
+            name='Policy Kitchen',
+            hall='Katanga',
+            active=True,
+            open=True,
+        )
+        self.meal = Meal.objects.create(
+            id='m_pol1',
+            vendor=self.vendor,
+            name='Banku & Tilapia',
+            price=Decimal('40.00'),
+            on=True,
+            left=20,
+        )
+
+    def test_policy_endpoint_and_cancel_until_prep_starts(self):
+        from datetime import timedelta
+        from decimal import Decimal
+        from django.utils import timezone
+        from api.models import Order
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+        pol_res = self.client.get('/api/orders/policy/')
+        self.assertEqual(pol_res.status_code, 200)
+        self.assertTrue(pol_res.data['customerCancelUntilPrepStarts'])
+        self.assertEqual(pol_res.data['customerCancelWindowSeconds'], 120)
+        self.assertEqual(pol_res.data['customerPaidCancelsPerDay'], 5)
+
+        # Paid order created 10 minutes ago, still at prep_stage='accepted' -> customer CAN cancel
+        order1 = Order.objects.create(
+            id='STW-POL1',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+            area='Katanga',
+            pickup_day='Today',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'qty': 1, 'price': 40.0}],
+            subtotal=Decimal('40.00'),
+            fee=Decimal('2.00'),
+            total=Decimal('42.00'),
+            payment_status='paid',
+            paid_at=timezone.now() - timedelta(minutes=10),
+            prep_stage='accepted',
+        )
+        Order.objects.filter(pk=order1.pk).update(created_at=timezone.now() - timedelta(minutes=10))
+
+        c_res = self.client.post(f'/api/orders/{order1.id}/cancel/')
+        self.assertEqual(c_res.status_code, 200)
+
+        # Once prep_stage='preparing', customer CANNOT cancel
+        order2 = Order.objects.create(
+            id='STW-POL2',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+            area='Katanga',
+            pickup_day='Today',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'qty': 1, 'price': 40.0}],
+            subtotal=Decimal('40.00'),
+            fee=Decimal('2.00'),
+            total=Decimal('42.00'),
+            payment_status='paid',
+            paid_at=timezone.now(),
+            prep_stage='preparing',
+        )
+        c2_res = self.client.post(f'/api/orders/{order2.id}/cancel/')
+        self.assertEqual(c2_res.status_code, 400)
+
+        # Daily cap on paid customer cancels
+        with self.settings(CUSTOMER_PAID_CANCELS_PER_DAY=1):
+            order3 = Order.objects.create(
+                id='STW-POL3',
+                customer=self.customer,
+                customer_name=self.customer.full_name,
+                email=self.customer.email,
+                phone=self.customer.phone,
+                area='Katanga',
+                pickup_day='Today',
+                vendor=self.vendor,
+                vendor_name=self.vendor.name,
+                lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'qty': 1, 'price': 40.0}],
+                subtotal=Decimal('40.00'),
+                fee=Decimal('2.00'),
+                total=Decimal('42.00'),
+                payment_status='paid',
+                paid_at=timezone.now(),
+                prep_stage='accepted',
+            )
+            c3_res = self.client.post(f'/api/orders/{order3.id}/cancel/')
+            self.assertIn(c3_res.status_code, (400, 429))
+
+    def test_expected_total_mismatch_and_init_payment_preflight_return_409(self):
+        from decimal import Decimal
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+
+        # expectedTotal mismatch on POST /api/orders/ -> 409
+        bad_order = self.client.post('/api/orders/', {
+            'lines': [{'mealId': self.meal.id, 'qty': 1}],
+            'area': 'Katanga',
+            'pickupDay': 'Today',
+            'expectedTotal': 10.00,
+        }, format='json')
+        self.assertEqual(bad_order.status_code, 409)
+
+        # Create valid order, then change meal price before init_payment -> 409
+        ok_order = self.client.post('/api/orders/', {
+            'lines': [{'mealId': self.meal.id, 'qty': 1}],
+            'area': 'Katanga',
+            'pickupDay': 'Today',
+        }, format='json')
+        self.assertEqual(ok_order.status_code, 201)
+        order_id = ok_order.data['id']
+
+        self.meal.price = Decimal('55.00')
+        self.meal.save(update_fields=['price'])
+
+        pay_res = self.client.post('/api/payments/initialize/', {'orderId': order_id}, format='json')
+        self.assertEqual(pay_res.status_code, 409)
+
+
+from unittest import skipUnless as _skip_unless
+from django.db import connection as _db_conn
+
+
+@_skip_unless(_db_conn.vendor == 'postgresql', 'PostgreSQL row-lock concurrency test')
+class CancelVsPrepRacePostgresTests(TransactionTestCase):
+    def test_customer_cancel_vs_vendor_preparing_race_is_serialized(self):
+        import threading
+        from decimal import Decimal
+        from django.db import connections
+        from django.utils import timezone
+        from api.models import User, Vendor, Meal, Order
+
+        _RATE_LIMIT_CACHE.clear()
+        cust = User.objects.create_user(
+            email='pg_race_cust@st.knust.edu.gh',
+            full_name='PG Cust',
+            phone='0241112233',
+            reference_id='20940001',
+            verified=True,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        vend_u = User.objects.create_user(
+            email='pg_race_vend@st.knust.edu.gh',
+            full_name='PG Vend',
+            phone='0551112233',
+            reference_id='20940002',
+            verified=True,
+            role='vendor',
+            is_vendor=True,
+            account_type='vendor',
+            password='Password123',
+        )
+        vend = Vendor.objects.create(id='v_pgrace', user=vend_u, name='PG Kitchen', hall='Unity', active=True, open=True)
+        Meal.objects.create(id='m_pgrace', vendor=vend, name='Rice', price=Decimal('25.00'), on=True, left=10)
+        order = Order.objects.create(
+            id='STW-PGRACE-C1',
+            customer=cust,
+            customer_name=cust.full_name,
+            email=cust.email,
+            phone=cust.phone,
+            area='Unity',
+            pickup_day='Today',
+            vendor=vend,
+            vendor_name=vend.name,
+            lines=[{'mealId': 'm_pgrace', 'name': 'Rice', 'qty': 1, 'price': 25.0}],
+            subtotal=Decimal('25.00'),
+            fee=Decimal('1.25'),
+            total=Decimal('26.25'),
+            payment_status='paid',
+            paid_at=timezone.now(),
+            prep_stage='accepted',
+        )
+
+        cust_tok = generate_jwt_token(cust)
+        vend_tok = generate_jwt_token(vend_u)
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def do_cancel():
+            try:
+                c = APIClient()
+                c.credentials(HTTP_AUTHORIZATION=f'Bearer {cust_tok}')
+                barrier.wait(timeout=5)
+                r = c.post(f'/api/orders/{order.id}/cancel/')
+                results['cancel'] = r.status_code
+            finally:
+                connections.close_all()
+
+        def do_prep():
+            try:
+                c = APIClient()
+                c.credentials(HTTP_AUTHORIZATION=f'Bearer {vend_tok}')
+                barrier.wait(timeout=5)
+                r = c.post(f'/api/orders/{order.id}/prep/', {'stage': 'preparing'}, format='json')
+                results['prep'] = r.status_code
+            finally:
+                connections.close_all()
+
+        t1 = threading.Thread(target=do_cancel)
+        t2 = threading.Thread(target=do_prep)
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+        self.assertEqual(sorted(results.values()), [200, 400])
+        order.refresh_from_db()
+        if results['cancel'] == 200:
+            self.assertIsNotNone(order.cancelled_at)
+            self.assertEqual(order.prep_stage, 'accepted')
+        else:
+            self.assertIsNone(order.cancelled_at)
+            self.assertEqual(order.prep_stage, 'preparing')
+
+
+
 
 
 

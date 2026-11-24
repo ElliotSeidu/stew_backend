@@ -1205,6 +1205,25 @@ def orders_view(request):
     fee = (subtotal * Decimal('0.05')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     total = (subtotal + fee).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
+    if data.get('expectedTotal') is not None:
+        try:
+            expected_total = Decimal(str(data.get('expectedTotal'))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError, TypeError):
+            expected_total = None
+        if expected_total is None or expected_total != total:
+            return Response(
+                {
+                    'code': 'price_changed',
+                    'message': 'Menu prices changed while you were reviewing your order. Please confirm the updated total.',
+                    'expectedTotal': float(expected_total) if expected_total is not None else None,
+                    'serverTotal': float(total),
+                    'subtotal': float(subtotal),
+                    'fee': float(fee),
+                    'lines': validated_lines,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
     # The order always belongs to the authenticated account's verified email —
     # never a client-supplied address (that would grant another student access to it).
     order_email = user.email
@@ -1260,6 +1279,17 @@ def orders_view(request):
 
 
 @api_view(['GET'])
+@permission_classes([AllowAny])
+def order_policy_view(request):
+    """Returns active customer cancellation policy settings."""
+    return Response({
+        'customerCancelUntilPrepStarts': bool(getattr(settings, 'CUSTOMER_CANCEL_UNTIL_PREP_STARTS', True)),
+        'customerCancelWindowSeconds': max(0, int(getattr(settings, 'CUSTOMER_CANCEL_WINDOW_SECONDS', 120))),
+        'customerPaidCancelsPerDay': max(1, int(getattr(settings, 'CUSTOMER_PAID_CANCELS_PER_DAY', 5))),
+    })
+
+
+@api_view(['GET'])
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsStudentUser])
 def order_detail_view(request, pk):
@@ -1307,15 +1337,32 @@ def cancel_order_view(request, pk):
         if order.collected_at or order.prep_stage == 'collected':
             return Response({'message': 'This order was already handed over and cannot be cancelled. Open a support case instead.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # If student, enforce 120s window and prep stage once payment is confirmed;
-        # unpaid orders remain cancellable until paid or expired.
+        # If student, enforce prep stage (and either until-prep-starts + daily cap or time window)
+        # once payment is confirmed; unpaid orders remain cancellable until paid or expired.
         if is_owner and not (is_platform_admin(user) or is_order_vendor):
             if order.is_vendor_visible:
                 if order.prep_stage != 'accepted':
                     return Response({'message': 'The kitchen has already started on this order.'}, status=status.HTTP_400_BAD_REQUEST)
-                elapsed_seconds = (dj_timezone.now() - order.created_at).total_seconds()
-                if elapsed_seconds > 120:
-                    return Response({'message': 'This order can no longer be cancelled (120s limit passed).'}, status=status.HTTP_400_BAD_REQUEST)
+                if getattr(settings, 'CUSTOMER_CANCEL_UNTIL_PREP_STARTS', True):
+                    daily_cap = max(1, int(getattr(settings, 'CUSTOMER_PAID_CANCELS_PER_DAY', 5)))
+                    recent_paid_cancels = Order.objects.filter(
+                        customer=user,
+                        paid_at__isnull=False,
+                        cancelled_at__gte=dj_timezone.now() - timedelta(days=1),
+                    ).count()
+                    if recent_paid_cancels >= daily_cap:
+                        return Response(
+                            {'message': f'Daily cancellation limit ({daily_cap} paid orders per day) reached.'},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS,
+                        )
+                else:
+                    window_secs = max(0, int(getattr(settings, 'CUSTOMER_CANCEL_WINDOW_SECONDS', 120)))
+                    elapsed_seconds = (dj_timezone.now() - order.created_at).total_seconds()
+                    if elapsed_seconds > window_secs:
+                        return Response(
+                            {'message': f'This order can no longer be cancelled ({window_secs}s limit passed).'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
         order.cancelled_at = dj_timezone.now()
         was_paid = order.payment_status in ['paid', 'released']
@@ -1364,6 +1411,33 @@ def init_payment_view(request):
             return Response({'message': 'This order is already paid'}, status=status.HTTP_400_BAD_REQUEST)
         if order.payment_status != 'pending':
             return Response({'message': 'This order can no longer be paid for'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Pre-flight re-check: vendor still active & open, and meals still on & at the same price
+        vendor_obj = Vendor.objects.filter(id=order.vendor_id).first() if order.vendor_id else None
+        if not vendor_obj or not vendor_obj.active or not vendor_obj.open:
+            return Response(
+                {'code': 'vendor_unavailable', 'message': 'This kitchen is no longer accepting orders.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        order_lines = order.lines or []
+        meal_ids = [ln.get('mealId') for ln in order_lines if isinstance(ln, dict) and ln.get('mealId')]
+        meals_by_id = {m.id: m for m in Meal.objects.filter(id__in=meal_ids)}
+        for ln in order_lines:
+            if not isinstance(ln, dict):
+                continue
+            m = meals_by_id.get(ln.get('mealId'))
+            if not m or not m.on:
+                return Response(
+                    {'code': 'meal_unavailable', 'message': f'"{ln.get("name", "An item")}" is no longer available.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            line_price = Decimal(str(ln.get('price', 0))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            db_price = Decimal(str(m.price)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            if line_price != db_price:
+                return Response(
+                    {'code': 'price_changed', 'message': f'Price of "{m.name}" changed before payment. Please place a fresh order.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
 
         amount_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
         existing_ref = str(order.payment_reference or '').strip()

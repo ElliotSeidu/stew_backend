@@ -25,6 +25,7 @@ urlpatterns = [
 
     # Orders & Escrow
     path('orders/', views.orders_view, name='orders'),
+    path('orders/policy/', views.order_policy_view, name='order_policy'),
     path('orders/<str:pk>/', views.order_detail_view, name='order_detail'),
     path('orders/<str:pk>/cancel/', views.cancel_order_view, name='cancel_order'),
     path('orders/<str:pk>/meetup/propose/', views.propose_meetup_view, name='propose_meetup'),

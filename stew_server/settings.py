@@ -324,6 +324,9 @@ JWT_ACCESS_TOKEN_LIFETIME_HOURS = int(os.getenv('JWT_ACCESS_TOKEN_LIFETIME_HOURS
 UNPAID_ORDER_TTL_MINUTES = max(1, int(os.getenv('UNPAID_ORDER_TTL_MINUTES', '30')))
 FAILED_LOGIN_RETENTION_DAYS = max(1, int(os.getenv('FAILED_LOGIN_RETENTION_DAYS', '30')))
 FAILED_LOGIN_IP_HOURLY_CAP = max(1, int(os.getenv('FAILED_LOGIN_IP_HOURLY_CAP', '60')))
+CUSTOMER_CANCEL_UNTIL_PREP_STARTS = os.getenv('CUSTOMER_CANCEL_UNTIL_PREP_STARTS', 'True').lower() in ('1', 'true', 'yes')
+CUSTOMER_CANCEL_WINDOW_SECONDS = max(0, int(os.getenv('CUSTOMER_CANCEL_WINDOW_SECONDS', '120')))
+CUSTOMER_PAID_CANCELS_PER_DAY = max(1, int(os.getenv('CUSTOMER_PAID_CANCELS_PER_DAY', '5')))
 
 # ---------------------------------------------------------------------------
 # PRODUCTION NOTES:
