@@ -5331,6 +5331,70 @@ class ServerTimeHeaderTests(TestCase):
         self.assertIsNotNone(parsed.tzinfo)
 
 
+class AppEnvAndStartupGuardsTests(TestCase):
+    def test_app_env_startup_guards(self):
+        from stew_server.settings import validate_runtime_settings
+
+        # Invalid APP_ENV -> RuntimeError
+        with self.assertRaises(RuntimeError):
+            validate_runtime_settings(
+                app_env='qa',
+                debug=False,
+                paystack_secret_key='sk_test_123',
+                paystack_allow_mock=False,
+                beta_email_allowlist=[],
+            )
+
+        # staging refuses sk_live_
+        with self.assertRaises(RuntimeError):
+            validate_runtime_settings(
+                app_env='staging',
+                debug=False,
+                paystack_secret_key='sk_live_123',
+                paystack_allow_mock=False,
+                beta_email_allowlist=[],
+            )
+
+        # staging accepts sk_test_
+        validate_runtime_settings(
+            app_env='staging',
+            debug=False,
+            paystack_secret_key='sk_test_123',
+            paystack_allow_mock=False,
+            beta_email_allowlist=['friend@gmail.com'],
+        )
+
+        # production refuses non-empty BETA_EMAIL_ALLOWLIST
+        with self.assertRaises(RuntimeError):
+            validate_runtime_settings(
+                app_env='production',
+                debug=False,
+                paystack_secret_key='sk_live_123',
+                paystack_allow_mock=False,
+                beta_email_allowlist=['friend@gmail.com'],
+            )
+
+        # DEBUG=True or PAYSTACK_ALLOW_MOCK=True forbidden outside development
+        for env_name in ('staging', 'production'):
+            with self.assertRaises(RuntimeError):
+                validate_runtime_settings(
+                    app_env=env_name,
+                    debug=True,
+                    paystack_secret_key='sk_test_123',
+                    paystack_allow_mock=False,
+                    beta_email_allowlist=[],
+                )
+            with self.assertRaises(RuntimeError):
+                validate_runtime_settings(
+                    app_env=env_name,
+                    debug=False,
+                    paystack_secret_key='sk_test_123',
+                    paystack_allow_mock=True,
+                    beta_email_allowlist=[],
+                )
+
+
+
 
 
 
