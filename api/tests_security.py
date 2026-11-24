@@ -5356,6 +5356,78 @@ class HealthAndProxyTests(TestCase):
         self.assertEqual(res_https.json(), {'status': 'ok'})
 
 
+class AppEnvAndStartupGuardsTests(TestCase):
+    def test_app_env_defaults_to_production(self):
+        import os
+        from django.conf import settings
+        self.assertIn(settings.APP_ENV, ('development', 'staging', 'production'))
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('APP_ENV', None)
+            self.assertEqual(os.getenv('APP_ENV', 'production'), 'production')
+
+    def test_validate_runtime_settings_guards(self):
+        from stew_server.settings import validate_runtime_settings
+
+        # Invalid APP_ENV rejected
+        with self.assertRaises(RuntimeError):
+            validate_runtime_settings(
+                app_env='qa',
+                debug=False,
+                paystack_secret_key='',
+                paystack_allow_mock=False,
+                beta_email_allowlist=[],
+            )
+
+        # Staging refuses live Paystack secret key
+        with self.assertRaises(RuntimeError):
+            validate_runtime_settings(
+                app_env='staging',
+                debug=False,
+                paystack_secret_key='sk_live_dummy_refused',
+                paystack_allow_mock=False,
+                beta_email_allowlist=[],
+            )
+
+        # Staging accepts test key or blank when DEBUG=False & mock=False
+        validate_runtime_settings(
+            app_env='staging',
+            debug=False,
+            paystack_secret_key='sk_test_dummy_allowed',
+            paystack_allow_mock=False,
+            beta_email_allowlist=['friend@gmail.com'],
+        )
+
+        # Production refuses non-empty BETA_EMAIL_ALLOWLIST
+        with self.assertRaises(RuntimeError):
+            validate_runtime_settings(
+                app_env='production',
+                debug=False,
+                paystack_secret_key='sk_live_dummy',
+                paystack_allow_mock=False,
+                beta_email_allowlist=['friend@gmail.com'],
+            )
+
+        # Staging/production refuse DEBUG=True and PAYSTACK_ALLOW_MOCK=True
+        for env_name in ('staging', 'production'):
+            with self.assertRaises(RuntimeError):
+                validate_runtime_settings(
+                    app_env=env_name,
+                    debug=True,
+                    paystack_secret_key='',
+                    paystack_allow_mock=False,
+                    beta_email_allowlist=[],
+                )
+            with self.assertRaises(RuntimeError):
+                validate_runtime_settings(
+                    app_env=env_name,
+                    debug=False,
+                    paystack_secret_key='',
+                    paystack_allow_mock=True,
+                    beta_email_allowlist=[],
+                )
+
+
+
 
 
 

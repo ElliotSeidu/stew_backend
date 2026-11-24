@@ -11,6 +11,7 @@ load_dotenv(BASE_DIR / '.env')
 _raw_key = os.getenv('SECRET_KEY', '')
 _key_lower = _raw_key.lower()
 # Default to False — production must explicitly set DEBUG=True in .env to enable debug mode.
+APP_ENV = os.getenv('APP_ENV', 'production').strip().lower()
 DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
 _is_weak_key = (
@@ -328,6 +329,69 @@ FAILED_LOGIN_IP_HOURLY_CAP = max(1, int(os.getenv('FAILED_LOGIN_IP_HOURLY_CAP', 
 CUSTOMER_CANCEL_UNTIL_PREP_STARTS = os.getenv('CUSTOMER_CANCEL_UNTIL_PREP_STARTS', 'True').lower() in ('1', 'true', 'yes')
 CUSTOMER_CANCEL_WINDOW_SECONDS = max(0, int(os.getenv('CUSTOMER_CANCEL_WINDOW_SECONDS', '120')))
 CUSTOMER_PAID_CANCELS_PER_DAY = max(1, int(os.getenv('CUSTOMER_PAID_CANCELS_PER_DAY', '5')))
+
+import re as _re
+_ALLOWLIST_EMAIL_RE = _re.compile(
+    r'^[a-z0-9]+(?:[._-][a-z0-9]+)*@[a-z0-9-]+(?:\.[a-z0-9-]+)+\Z',
+    _re.ASCII,
+)
+
+
+def parse_beta_email_allowlist(raw: str) -> list[str]:
+    """Parse and strictly validate comma-separated exact lowercase ASCII beta emails."""
+    if not raw or not str(raw).strip():
+        return []
+    result = []
+    for part in str(raw).split(','):
+        entry = part.strip()
+        if not entry:
+            continue
+        if (
+            not entry.isascii()
+            or entry != entry.lower()
+            or '*' in entry
+            or not _ALLOWLIST_EMAIL_RE.match(entry)
+        ):
+            raise RuntimeError(
+                f"Invalid BETA_EMAIL_ALLOWLIST entry '{entry}'. "
+                "Must be an exact full lowercase ASCII email address (no wildcards or bare domains)."
+            )
+        result.append(entry)
+    return result
+
+
+BETA_EMAIL_ALLOWLIST = parse_beta_email_allowlist(os.getenv('BETA_EMAIL_ALLOWLIST', ''))
+
+
+def validate_runtime_settings(
+    *,
+    app_env: str,
+    debug: bool,
+    paystack_secret_key: str,
+    paystack_allow_mock: bool,
+    beta_email_allowlist,
+) -> None:
+    """Enforce environment-specific startup safety invariants."""
+    if app_env not in ('development', 'staging', 'production'):
+        raise RuntimeError(f"Invalid APP_ENV='{app_env}'. Must be development, staging, or production.")
+    if app_env != 'development':
+        if debug:
+            raise RuntimeError(f"DEBUG=True is forbidden when APP_ENV={app_env}.")
+        if paystack_allow_mock:
+            raise RuntimeError(f"PAYSTACK_ALLOW_MOCK=True is forbidden when APP_ENV={app_env}.")
+    if app_env == 'staging' and str(paystack_secret_key or '').strip().startswith('sk_live_'):
+        raise RuntimeError("APP_ENV=staging refuses live Paystack secret keys (sk_live_*). Use sk_test_*.")
+    if app_env == 'production' and list(beta_email_allowlist or []):
+        raise RuntimeError("APP_ENV=production refuses a non-empty BETA_EMAIL_ALLOWLIST.")
+
+
+validate_runtime_settings(
+    app_env=APP_ENV,
+    debug=DEBUG,
+    paystack_secret_key=PAYSTACK_SECRET_KEY,
+    paystack_allow_mock=PAYSTACK_ALLOW_MOCK,
+    beta_email_allowlist=BETA_EMAIL_ALLOWLIST,
+)
 
 # ---------------------------------------------------------------------------
 # PRODUCTION NOTES:
