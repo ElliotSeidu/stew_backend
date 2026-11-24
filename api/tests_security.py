@@ -4289,7 +4289,7 @@ class PendingVendorApprovalTests(TestCase):
 
         # Admin approves vendor (active=True, open omitted -> auto-opens open=True)
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
-        adm_res = self.client.patch(f'/api/admin/vendors/{vendor.id}/', {'active': True}, format='json')
+        adm_res = self.client.patch(f'/api/admin/vendors/{vendor.id}/', {'active': True, 'verificationMethod': 'in_person'}, format='json')
         self.assertEqual(adm_res.status_code, 200)
         self.assertTrue(adm_res.data['active'])
         self.assertTrue(adm_res.data['open'])
@@ -4307,6 +4307,118 @@ class PendingVendorApprovalTests(TestCase):
         }, format='json')
         self.assertEqual(ok_meal.status_code, 201)
         self.assertEqual(self.client.get(f'/api/vendors/{vendor.id}/').status_code, 200)
+
+
+class NoIdentityDocumentTests(TestCase):
+    """1.2: No ID photos accepted/stored, admin activation requires verificationMethod, and purge command works."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(
+            id='u-noid-adm',
+            email='noidadm@st.knust.edu.gh',
+            full_name='NoID Admin',
+            role='admin',
+            account_type='customer',
+            is_admin=True,
+            verified=True,
+            reference_id='20903001',
+            password='Password123',
+        )
+        self.student = User.objects.create_user(
+            id='u-noid-stud',
+            email='noidstud@st.knust.edu.gh',
+            full_name='NoID Student',
+            role='customer',
+            account_type='customer',
+            verified=True,
+            reference_id='20903002',
+            password='Password123',
+        )
+        self.admin_token = generate_jwt_token(self.admin)
+        self.stud_token = generate_jwt_token(self.student)
+
+    def test_vendor_apply_rejects_id_document_fields_and_requires_verification_method_on_approval(self):
+        from api.models import AuditEntry
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.stud_token}')
+        for bad_key in ('idDoc', 'id_doc', 'idPhoto', 'ghanaCard', 'idNumber'):
+            res = self.client.post('/api/vendor/apply/', {
+                'kitchen': 'Test Kitchen',
+                'hall': 'Unity Hall (Conti)',
+                'sells': ['Jollof'],
+                'about': 'Clean kitchen.',
+                'payout': '0249555111',
+                bad_key: 'student-id.jpg',
+            }, format='json')
+            self.assertEqual(res.status_code, 400, f'Expected 400 for {bad_key}, got {res.status_code}')
+
+        # Clean application succeeds as pending
+        ok_apply = self.client.post('/api/vendor/apply/', {
+            'kitchen': 'Clean Kitchen',
+            'hall': 'Unity Hall (Conti)',
+            'sells': ['Jollof'],
+            'about': 'Clean kitchen without ID uploads.',
+            'payout': '0249555111',
+        }, format='json')
+        self.assertEqual(ok_apply.status_code, 200)
+        self.assertEqual(ok_apply.data['status'], 'pending')
+        vendor = Vendor.objects.get(user=self.student)
+        self.assertFalse(vendor.active)
+
+        # Admin activation without verificationMethod is refused
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        no_method = self.client.patch(f'/api/admin/vendors/{vendor.id}/', {'active': True}, format='json')
+        self.assertEqual(no_method.status_code, 400)
+        vendor.refresh_from_db()
+        self.assertFalse(vendor.active)
+
+        # Invalid method is refused
+        bad_method = self.client.patch(
+            f'/api/admin/vendors/{vendor.id}/',
+            {'active': True, 'verificationMethod': 'id_card_scan'},
+            format='json',
+        )
+        self.assertEqual(bad_method.status_code, 400)
+
+        # Valid method + note activates and writes AuditEntry
+        good = self.client.patch(
+            f'/api/admin/vendors/{vendor.id}/',
+            {'active': True, 'verificationMethod': 'in_person', 'verificationNote': 'Met at Unity Hall kitchen'},
+            format='json',
+        )
+        self.assertEqual(good.status_code, 200)
+        self.assertTrue(good.data['active'])
+        self.assertTrue(good.data['open'])
+        entry = AuditEntry.objects.filter(action='admin_vendor_updated', entity_id=vendor.id).order_by('-at').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.actor, self.admin.email)
+        self.assertEqual(entry.extra.get('verificationMethod'), 'in_person')
+        self.assertEqual(entry.extra.get('verificationNote'), 'Met at Unity Hall kitchen')
+
+    def test_purge_identity_documents_command_dry_run_and_apply(self):
+        from api.models import AuditEntry
+        from io import StringIO
+        from django.core.management import call_command
+        entry = AuditEntry.objects.create(
+            actor=self.admin.email,
+            action='legacy_apply',
+            entity_type='vendor',
+            entity_id='v-legacy',
+            extra={'idDoc': 'student_id.png', 'ghanaCard': 'GHA-123456', 'keep': 'ok'},
+        )
+        out_dry = StringIO()
+        call_command('purge_identity_documents', stdout=out_dry)
+        entry.refresh_from_db()
+        self.assertIn('idDoc', entry.extra)
+        self.assertIn('dry-run', out_dry.getvalue().lower())
+
+        out_apply = StringIO()
+        call_command('purge_identity_documents', '--apply', stdout=out_apply)
+        entry.refresh_from_db()
+        self.assertNotIn('idDoc', entry.extra)
+        self.assertNotIn('ghanaCard', entry.extra)
+        self.assertEqual(entry.extra.get('keep'), 'ok')
+
 
 
 

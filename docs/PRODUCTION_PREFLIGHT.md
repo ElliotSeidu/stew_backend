@@ -380,3 +380,17 @@ Because creating an order reserves `Meal.left` portions before Paystack checkout
 # Run every 5 minutes via cron, systemd timer, or platform scheduled job
 */5 * * * * cd /app/stew_backend && /app/venv/bin/python manage.py expire_unpaid_orders >> /var/log/stew-expire-orders.log 2>&1
 ```
+
+---
+
+## 10. Identity Document Purge (`purge_identity_documents`)
+
+STEW does not collect, store, or display student IDs or any identity documents. To verify or clean any legacy identity-document references in `AuditEntry.extra` or `Compliance` records (and local `MEDIA_ROOT` files if present):
+
+```bash
+# Dry-run first (default — makes no changes, prints counts):
+python manage.py purge_identity_documents
+
+# Apply redaction/deletion after reviewing dry-run counts:
+python manage.py purge_identity_documents --apply
+```

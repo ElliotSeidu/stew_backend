@@ -926,7 +926,7 @@ class SecurityAnalystAndKNUSTPolicyTests(TestCase):
             password='Password123',
         )
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(pva_admin)}')
-        adm_res = self.client.patch(f'/api/admin/vendors/{fresh_vendor.id}/', {'active': True}, format='json')
+        adm_res = self.client.patch(f'/api/admin/vendors/{fresh_vendor.id}/', {'active': True, 'verificationMethod': 'in_person'}, format='json')
         self.assertEqual(adm_res.status_code, 200)
         self.assertTrue(adm_res.data['active'])
         self.assertTrue(adm_res.data['open'])

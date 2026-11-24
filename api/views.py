@@ -952,15 +952,44 @@ def meal_detail_view(request, pk):
     return Response(MealSerializer(meal).data)
 
 
+_FORBIDDEN_ID_KEYS = {
+    'iddoc', 'id_doc', 'iddocument', 'id_document', 'idnumber', 'id_number',
+    'studentid', 'student_id', 'studentidphoto', 'student_id_photo',
+    'studentiddoc', 'student_id_doc', 'studentidnumber', 'student_id_number',
+    'nationalid', 'national_id', 'ghanacard', 'ghana_card',
+    'passport', 'passportphoto', 'passport_photo',
+    'driverslicense', 'drivers_license', 'idphoto', 'id_photo',
+    'idfront', 'id_front', 'idback', 'id_back',
+}
+_VALID_VERIFICATION_METHODS = {'in_person', 'video_call', 'vouched'}
+
+
+def _has_forbidden_id_field(data):
+    """Return True if request data contains any identity/ID document key."""
+    if not isinstance(data, dict):
+        return False
+    for k, v in data.items():
+        if str(k).lower() in _FORBIDDEN_ID_KEYS:
+            return True
+        if isinstance(v, dict) and _has_forbidden_id_field(v):
+            return True
+    return False
+
+
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsStudentUser])
 def vendor_apply_view(request):
     """Submits vendor onboarding application."""
     user = request.user
+    data = request.data
+    if _has_forbidden_id_field(data) or _has_forbidden_id_field(getattr(request, 'FILES', {})):
+        return Response(
+            {'message': 'STEW does not collect or accept student IDs or identity documents.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     if not check_rate_limit(f"vendor_apply_{user.id}", limit=5, window_seconds=300):
         return Response({'message': 'Too many kitchen applications. Please wait a few minutes.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-    data = request.data
     kitchen_name = escape(str(data.get('kitchen') or data.get('kitchenName') or '').strip())[:150]
     if len(kitchen_name) < 2:
         return Response({'errors': {'kitchen': 'Give your kitchen a name.'}}, status=status.HTTP_400_BAD_REQUEST)
@@ -2484,15 +2513,33 @@ def admin_vendor_detail_view(request, pk):
         return Response({'message': 'Vendor not found.'}, status=status.HTTP_404_NOT_FOUND)
 
     data = request.data
+    if _has_forbidden_id_field(data) or _has_forbidden_id_field(getattr(request, 'FILES', {})):
+        return Response(
+            {'message': 'STEW does not collect or accept student IDs or identity documents.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     was_inactive = not vendor.active
+    new_active = bool(data['active']) if 'active' in data else vendor.active
+    audit_extra = {}
+    if was_inactive and new_active:
+        method = str(data.get('verificationMethod') or '').strip()
+        if method not in _VALID_VERIFICATION_METHODS:
+            return Response(
+                {'message': 'verificationMethod must be one of: in_person, video_call, vouched.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        audit_extra['verificationMethod'] = method
+        note = str(data.get('verificationNote') or '').strip()[:500]
+        if note:
+            audit_extra['verificationNote'] = note
     if 'active' in data:
-        vendor.active = bool(data['active'])
+        vendor.active = new_active
     if 'open' in data:
         vendor.open = bool(data['open'])
     elif was_inactive and vendor.active:
         vendor.open = True
     vendor.save()
-    record_audit(request.user.email, 'admin_vendor_updated', 'vendor', vendor.id, {'active': vendor.active, 'open': vendor.open})
+    record_audit(request.user.email, 'admin_vendor_updated', 'vendor', vendor.id, {'active': vendor.active, 'open': vendor.open, **audit_extra})
     return Response(VendorSerializer(vendor).data)
 
 
