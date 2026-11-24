@@ -1,0 +1,99 @@
+databases:
+  - name: stew-db-staging
+    databaseName: stew_staging
+    user: stew_staging_user
+    plan: free
+    region: frankfurt
+
+services:
+  - type: web
+    name: stew-api-staging
+    runtime: python
+    plan: free
+    region: frankfurt
+    branch: chore/render-staging
+    autoDeploy: true
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py migrate --noinput && gunicorn stew_server.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120"
+    healthCheckPath: /api/health/
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.1"
+      - key: APP_ENV
+        value: staging
+      - key: DEBUG
+        value: "False"
+      - key: PAYSTACK_ALLOW_MOCK
+        value: "False"
+      - key: DB_ENGINE
+        value: postgresql
+      - key: DB_SSLMODE
+        value: require
+      - key: DB_HOST
+        fromDatabase:
+          name: stew-db-staging
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: stew-db-staging
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: stew-db-staging
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: stew-db-staging
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: stew-db-staging
+          property: password
+      - key: ALLOWED_HOSTS
+        value: stew-api-staging.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://stew-web-staging.onrender.com
+      - key: CSRF_TRUSTED_ORIGINS
+        value: https://stew-web-staging.onrender.com
+      - key: TRUSTED_PROXY_COUNT
+        value: "1"
+      - key: THROTTLE_ANON_PER_MIN
+        value: "1000"
+      - key: THROTTLE_USER_PER_MIN
+        value: "120"
+      - key: FAILED_LOGIN_RETENTION_DAYS
+        value: "30"
+      - key: FAILED_LOGIN_IP_HOURLY_CAP
+        value: "60"
+      - key: CUSTOMER_CANCEL_UNTIL_PREP_STARTS
+        value: "True"
+      - key: CUSTOMER_CANCEL_WINDOW_SECONDS
+        value: "120"
+      - key: CUSTOMER_PAID_CANCELS_PER_DAY
+        value: "5"
+      - key: UNPAID_ORDER_TTL_MINUTES
+        value: "30"
+      - key: JWT_ACCESS_TOKEN_LIFETIME_HOURS
+        value: "12"
+      - key: SECRET_KEY
+        sync: false
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: BETA_EMAIL_ALLOWLIST
+        sync: false
+      - key: EMAIL_BACKEND
+        sync: false
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        sync: false
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: EMAIL_USE_TLS
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
