@@ -74,4 +74,5 @@ urlpatterns = [
     path('notifications/subscribe/', views.subscribe_push_view, name='subscribe_push'),
     path('notifications/unsubscribe/', views.unsubscribe_push_view, name='unsubscribe_push'),
     path('analytics/events/', views.analytics_event_view, name='analytics_events'),
+    path('health/', views.health_view, name='health'),
 ]

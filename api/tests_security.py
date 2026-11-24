@@ -5475,6 +5475,15 @@ class BetaEmailAllowlistTests(TestCase):
             self.assertFalse(is_allowed_email('beta.friend@gmail.com'))
 
 
+class HealthEndpointTests(TestCase):
+    def test_health_endpoint_unauthenticated_minimal_no_db_writes(self):
+        with self.assertNumQueries(0):
+            res = self.client.get('/api/health/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {'status': 'ok'})
+
+
+
 
 
 

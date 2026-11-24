@@ -3142,3 +3142,11 @@ def admin_refunds_attention_view(request):
                 'cancelledAt': int(o.cancelled_at.timestamp() * 1000) if o.cancelled_at else None,
             })
     return Response({'results': results, 'count': len(results)})
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def health_view(request):
+    """Minimal unauthenticated liveness check with zero DB queries/writes."""
+    return Response({'status': 'ok'})
