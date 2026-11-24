@@ -1,4 +1,5 @@
 import re
+from django.conf import settings
 from rest_framework.exceptions import ValidationError
 
 KNUST_STUDENT_EMAIL_REGEX = re.compile(
@@ -9,18 +10,35 @@ GHANA_PHONE_REGEX = re.compile(r'^(?:\+233|0)[25]\d{8}$')
 STUDENT_REF_ID_REGEX = re.compile(r'^\d{8}$')
 
 
+def is_allowed_email(email: str) -> bool:
+    """
+    Single canonical email-eligibility check used across validators, auth views, and JWT auth.
+    Allows valid @st.knust.edu.gh ASCII addresses everywhere, and exact lowercase ASCII
+    addresses in BETA_EMAIL_ALLOWLIST only when APP_ENV == 'staging'.
+    """
+    if not email:
+        return False
+    normalized = str(email).strip().lower()
+    if not normalized or not normalized.isascii():
+        return False
+    if KNUST_STUDENT_EMAIL_REGEX.match(normalized):
+        return True
+    if getattr(settings, 'APP_ENV', 'production') == 'staging':
+        allowlist = getattr(settings, 'BETA_EMAIL_ALLOWLIST', ()) or ()
+        return normalized in allowlist
+    return False
+
+
 def clean_knust_email(email: str) -> str:
     """
-    Validates and normalizes KNUST student email addresses.
-    Rejects any email that is not an official KNUST student address (@st.knust.edu.gh).
-    Strictly forbids Gmail, Yahoo, Outlook, or any external email service.
+    Validates and normalizes KNUST student email addresses (or staging-allowlisted beta emails).
     """
     if not email:
         raise ValidationError({'email': 'Email is required.'})
 
     normalized = str(email).strip().lower()
 
-    if not KNUST_STUDENT_EMAIL_REGEX.match(normalized):
+    if not is_allowed_email(normalized):
         raise ValidationError({
             'email': 'Only valid KNUST student emails (@st.knust.edu.gh) are allowed entry. No external email services (e.g. Gmail, Yahoo, etc.) are permitted.'
         })

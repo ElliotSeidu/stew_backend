@@ -5427,6 +5427,141 @@ class AppEnvAndStartupGuardsTests(TestCase):
                 )
 
 
+class BetaEmailAllowlistTests(TestCase):
+    def setUp(self):
+        _RATE_LIMIT_CACHE.clear()
+        self.client = APIClient()
+
+    def test_parser_rejects_wildcards_domains_uppercase_and_non_ascii(self):
+        from stew_server.settings import parse_beta_email_allowlist
+        self.assertEqual(
+            parse_beta_email_allowlist(' friend@gmail.com , tester.two@outlook.com '),
+            ['friend@gmail.com', 'tester.two@outlook.com'],
+        )
+        self.assertEqual(parse_beta_email_allowlist(''), [])
+        for bad in (
+            '*@gmail.com',
+            'gmail.com',
+            '@gmail.com',
+            'Friend@gmail.com',
+            'fr\u0456end@gmail.com',  # Cyrillic lookalike i
+        ):
+            with self.assertRaises(RuntimeError, msg=f'Should reject {bad!r}'):
+                parse_beta_email_allowlist(bad)
+
+    @override_settings(APP_ENV='staging', BETA_EMAIL_ALLOWLIST=['friend@gmail.com'])
+    def test_staging_allowlist_works_across_all_auth_flows_and_rejects_lookalikes(self):
+        import re
+        from api.validators import clean_knust_email, is_allowed_email
+        from api.models import User
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        # Normalization & lookalike checks
+        self.assertTrue(is_allowed_email('  FRIEND@GMAIL.COM  '))
+        self.assertEqual(clean_knust_email('  FRIEND@GMAIL.COM  '), 'friend@gmail.com')
+        self.assertFalse(is_allowed_email('other@gmail.com'))
+        self.assertFalse(is_allowed_email('fr\u0456end@gmail.com'))
+        with self.assertRaises(DRFValidationError):
+            clean_knust_email('other@gmail.com')
+
+        # 1. Registration (requires OTP verification before login works)
+        r_reg_bad = self.client.post('/api/auth/register/', {
+            'email': 'other@gmail.com',
+            'password': 'StrongPassword123!',
+            'fullName': 'Non Allowlisted',
+            'referenceId': '20990001',
+            'phone': '0241000001',
+            'hall': 'Unity Hall',
+            'accountType': 'customer',
+        }, format='json')
+        self.assertEqual(r_reg_bad.status_code, 400)
+
+        r_reg_lookalike = self.client.post('/api/auth/register/', {
+            'email': 'fr\u0456end@gmail.com',
+            'password': 'StrongPassword123!',
+            'fullName': 'Lookalike User',
+            'referenceId': '20990002',
+            'phone': '0241000002',
+            'hall': 'Unity Hall',
+            'accountType': 'customer',
+        }, format='json')
+        self.assertEqual(r_reg_lookalike.status_code, 400)
+
+        with patch('api.views._dispatch_otp_email') as mock_dispatch:
+            r_reg_ok = self.client.post('/api/auth/register/', {
+                'email': '  FRIEND@GMAIL.COM  ',
+                'password': 'StrongPassword123!',
+                'fullName': 'Beta Friend',
+                'referenceId': '20990003',
+                'phone': '0241000003',
+                'hall': 'Unity Hall',
+                'accountType': 'customer',
+            }, format='json')
+        self.assertEqual(r_reg_ok.status_code, 201, r_reg_ok.data)
+        otp_code = mock_dispatch.call_args[0][1]
+
+        # Unverified allowlisted user still cannot log in (and login_view issues a fresh verification OTP)
+        with patch('api.views._dispatch_otp_email') as mock_login_dispatch:
+            r_login_unverified = self.client.post('/api/auth/login/', {
+                'email': 'friend@gmail.com',
+                'password': 'StrongPassword123!',
+            }, format='json')
+        self.assertEqual(r_login_unverified.status_code, 400)
+        otp_code = mock_login_dispatch.call_args[0][1]
+
+        # 2. Verify email with OTP
+        r_verify = self.client.post('/api/auth/verify-email/', {
+            'email': 'FRIEND@GMAIL.COM',
+            'code': otp_code,
+        }, format='json')
+        self.assertEqual(r_verify.status_code, 200, r_verify.data)
+
+        # 3. Login + JWT auth (/api/auth/me/)
+        r_login = self.client.post('/api/auth/login/', {
+            'email': 'friend@gmail.com',
+            'password': 'StrongPassword123!',
+        }, format='json')
+        self.assertEqual(r_login.status_code, 200, r_login.data)
+        token = r_login.data['access']
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        r_me = self.client.get('/api/auth/me/')
+        self.assertEqual(r_me.status_code, 200)
+        self.assertEqual(r_me.data['email'], 'friend@gmail.com')
+
+        # 4. Login-code request & verify
+        self.client.credentials()
+        with patch('api.views._dispatch_otp_email') as mock_lc_dispatch:
+            r_lc_req = self.client.post('/api/auth/login-code/request/', {'email': 'friend@gmail.com'}, format='json')
+        self.assertEqual(r_lc_req.status_code, 200)
+        lc_code = mock_lc_dispatch.call_args[0][1]
+        r_lc_ver = self.client.post('/api/auth/login-code/verify/', {'email': 'friend@gmail.com', 'code': lc_code}, format='json')
+        self.assertEqual(r_lc_ver.status_code, 200, r_lc_ver.data)
+        r_lc_bad = self.client.post('/api/auth/login-code/request/', {'email': 'other@gmail.com'}, format='json')
+        self.assertEqual(r_lc_bad.status_code, 400)
+
+        # 5. Forgot / reset password
+        with patch('api.views._dispatch_otp_email') as mock_fp_dispatch:
+            r_fp = self.client.post('/api/auth/forgot-password/', {'email': 'friend@gmail.com'}, format='json')
+        self.assertEqual(r_fp.status_code, 200)
+        fp_code = mock_fp_dispatch.call_args[0][1]
+        r_rp = self.client.post('/api/auth/reset-password/', {
+            'email': 'friend@gmail.com',
+            'code': fp_code,
+            'password': 'NewStrongPassword123!',
+        }, format='json')
+        self.assertEqual(r_rp.status_code, 200, r_rp.data)
+        r_fp_bad = self.client.post('/api/auth/forgot-password/', {'email': 'other@gmail.com'}, format='json')
+        self.assertEqual(r_fp_bad.status_code, 400)
+
+        # 6. If allowlist is removed or APP_ENV=production, JWTAuthentication rejects the user
+        with override_settings(APP_ENV='production', BETA_EMAIL_ALLOWLIST=[]):
+            self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+            r_me_prod = self.client.get('/api/auth/me/')
+            self.assertEqual(r_me_prod.status_code, 401)
+            self.assertFalse(is_allowed_email('friend@gmail.com'))
+
+
+
 
 
 

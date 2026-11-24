@@ -3,7 +3,7 @@ from rest_framework import authentication, permissions
 from rest_framework.exceptions import AuthenticationFailed
 from api.models import User
 from api.security import decode_jwt_token, is_jwt_revoked, password_fingerprint
-from api.validators import KNUST_STUDENT_EMAIL_REGEX
+from api.validators import is_allowed_email
 
 
 class JWTAuthentication(authentication.BaseAuthentication):
@@ -38,8 +38,8 @@ class JWTAuthentication(authentication.BaseAuthentication):
         if not hmac.compare_digest(str(payload.get('pv', '')), password_fingerprint(user)):
             raise AuthenticationFailed('Your session has expired. Please log in again.')
 
-        # Defensive check: ensure email is strictly a KNUST student email
-        if not KNUST_STUDENT_EMAIL_REGEX.match(user.email):
+        # Defensive check: ensure email passes canonical campus/staging-allowlist check
+        if not is_allowed_email(user.email):
             raise AuthenticationFailed('Access restricted: Only KNUST students with @st.knust.edu.gh emails are authorized.')
 
         return (user, token)
