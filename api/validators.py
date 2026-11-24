@@ -1,26 +1,53 @@
 import re
+from django.conf import settings
 from rest_framework.exceptions import ValidationError
 
 KNUST_STUDENT_EMAIL_REGEX = re.compile(
     r'^[a-z0-9]+(?:[._-][a-z0-9]+)*@st\.knust\.edu\.gh\Z',
     re.IGNORECASE | re.ASCII,
 )
+_GENERAL_STRICT_EMAIL_REGEX = re.compile(
+    r'^[a-z0-9]+(?:[._-][a-z0-9]+)*@[a-z0-9-]+(?:\.[a-z0-9-]+)+\Z',
+    re.ASCII,
+)
 GHANA_PHONE_REGEX = re.compile(r'^(?:\+233|0)[25]\d{8}$')
 STUDENT_REF_ID_REGEX = re.compile(r'^\d{8}$')
 
 
+def is_allowed_email(normalized_email: str) -> bool:
+    """Canonical email check: KNUST student email, or exact allowlisted email in APP_ENV=staging."""
+    if not normalized_email or not isinstance(normalized_email, str):
+        return False
+    if not normalized_email.isascii():
+        return False
+    if KNUST_STUDENT_EMAIL_REGEX.match(normalized_email):
+        return True
+    if getattr(settings, 'APP_ENV', 'production') == 'staging':
+        allowlist = {
+            str(e).strip().lower()
+            for e in (getattr(settings, 'BETA_EMAIL_ALLOWLIST', None) or [])
+            if e
+        }
+        if _GENERAL_STRICT_EMAIL_REGEX.match(normalized_email) and normalized_email in allowlist:
+            return True
+    return False
+
+
 def clean_knust_email(email: str) -> str:
     """
-    Validates and normalizes KNUST student email addresses.
-    Rejects any email that is not an official KNUST student address (@st.knust.edu.gh).
-    Strictly forbids Gmail, Yahoo, Outlook, or any external email service.
+    Validates and normalizes student (or staging-allowlisted) email addresses.
+    Rejects control characters, non-ASCII lookalikes, plus-addressing, and unapproved domains.
     """
     if not email:
         raise ValidationError({'email': 'Email is required.'})
 
-    normalized = str(email).strip().lower()
+    raw = str(email)
+    if any(ord(c) < 32 for c in raw):
+        raise ValidationError({'email': 'Invalid email format.'})
 
-    if not KNUST_STUDENT_EMAIL_REGEX.match(normalized):
+    normalized = raw.strip().lower()
+
+    if not is_allowed_email(normalized):
         raise ValidationError({
             'email': 'Only valid KNUST student emails (@st.knust.edu.gh) are allowed entry. No external email services (e.g. Gmail, Yahoo, etc.) are permitted.'
         })

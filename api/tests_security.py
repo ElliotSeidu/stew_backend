@@ -5394,6 +5394,88 @@ class AppEnvAndStartupGuardsTests(TestCase):
                 )
 
 
+class BetaEmailAllowlistTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+
+    def test_parse_beta_email_allowlist_rejects_wildcards_domains_and_uppercase(self):
+        from stew_server.settings import parse_beta_email_allowlist
+        for bad in (
+            '*@gmail.com',
+            '@gmail.com',
+            'gmail.com',
+            'Friend@gmail.com',
+            'a@b.com, *@yahoo.com',
+            'bad\n@gmail.com',
+            'kоfi@gmail.com',  # cyrillic o
+        ):
+            with self.assertRaises(RuntimeError, msg=f'Expected RuntimeError for {bad!r}'):
+                parse_beta_email_allowlist(bad)
+
+        self.assertEqual(
+            parse_beta_email_allowlist('friend1@gmail.com, friend2@yahoo.com'),
+            ['friend1@gmail.com', 'friend2@yahoo.com'],
+        )
+        self.assertEqual(parse_beta_email_allowlist(''), [])
+
+    def test_allowlist_honored_only_in_staging_across_all_auth_and_jwt_paths(self):
+        from api.models import User
+        from api.validators import is_allowed_email, clean_knust_email
+
+        with self.settings(APP_ENV='staging', BETA_EMAIL_ALLOWLIST=['beta.friend@gmail.com']):
+            # Non-listed gmail rejected
+            bad_reg = self.client.post('/api/auth/register/', {
+                'email': 'stranger@gmail.com',
+                'password': 'Password123',
+                'fullName': 'Stranger',
+                'referenceId': '20970001',
+                'phone': '0241119999',
+            }, format='json')
+            self.assertEqual(bad_reg.status_code, 400)
+
+            # Campus edge cases still rejected
+            for bad_campus in ('kofi+1@st.knust.edu.gh', 'kofi@mail.st.knust.edu.gh', 'kоfi@st.knust.edu.gh'):
+                with self.assertRaises(Exception):
+                    clean_knust_email(bad_campus)
+
+            # Listed gmail can register, verify, log in, and call JWT endpoints
+            ok_reg = self.client.post('/api/auth/register/', {
+                'email': 'beta.friend@gmail.com',
+                'password': 'Password123',
+                'fullName': 'Beta Friend',
+                'referenceId': '20970002',
+                'phone': '0241118888',
+            }, format='json')
+            self.assertEqual(ok_reg.status_code, 201)
+
+            u = User.objects.get(email='beta.friend@gmail.com')
+            u.verified = True
+            u.save(update_fields=['verified'])
+
+            login_res = self.client.post('/api/auth/login/', {
+                'email': 'beta.friend@gmail.com',
+                'password': 'Password123',
+            }, format='json')
+            self.assertEqual(login_res.status_code, 200)
+            token = login_res.data['access']
+
+            self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+            me_res = self.client.get('/api/auth/me/')
+            self.assertEqual(me_res.status_code, 200)
+            self.assertEqual(me_res.data['email'], 'beta.friend@gmail.com')
+
+        # Ignored in production / development even if present
+        with self.settings(APP_ENV='production', BETA_EMAIL_ALLOWLIST=['beta.friend@gmail.com']):
+            self.assertFalse(is_allowed_email('beta.friend@gmail.com'))
+            me_prod = self.client.get('/api/auth/me/')
+            self.assertEqual(me_prod.status_code, 401)
+
+        with self.settings(APP_ENV='development', BETA_EMAIL_ALLOWLIST=['beta.friend@gmail.com']):
+            self.assertFalse(is_allowed_email('beta.friend@gmail.com'))
+
+
+
 
 
 

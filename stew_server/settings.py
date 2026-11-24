@@ -329,7 +329,38 @@ FAILED_LOGIN_IP_HOURLY_CAP = max(1, int(os.getenv('FAILED_LOGIN_IP_HOURLY_CAP', 
 CUSTOMER_CANCEL_UNTIL_PREP_STARTS = os.getenv('CUSTOMER_CANCEL_UNTIL_PREP_STARTS', 'True').lower() in ('1', 'true', 'yes')
 CUSTOMER_CANCEL_WINDOW_SECONDS = max(0, int(os.getenv('CUSTOMER_CANCEL_WINDOW_SECONDS', '120')))
 CUSTOMER_PAID_CANCELS_PER_DAY = max(1, int(os.getenv('CUSTOMER_PAID_CANCELS_PER_DAY', '5')))
-BETA_EMAIL_ALLOWLIST = []
+
+import re as _re
+_ALLOWLIST_EMAIL_RE = _re.compile(
+    r'^[a-z0-9]+(?:[._-][a-z0-9]+)*@[a-z0-9-]+(?:\.[a-z0-9-]+)+\Z',
+    _re.ASCII,
+)
+
+
+def parse_beta_email_allowlist(raw: str) -> list[str]:
+    """Parse and strictly validate comma-separated exact lowercase ASCII beta emails."""
+    if not raw or not str(raw).strip():
+        return []
+    result = []
+    for part in str(raw).split(','):
+        entry = part.strip()
+        if not entry:
+            continue
+        if (
+            not entry.isascii()
+            or entry != entry.lower()
+            or '*' in entry
+            or not _ALLOWLIST_EMAIL_RE.match(entry)
+        ):
+            raise RuntimeError(
+                f"Invalid BETA_EMAIL_ALLOWLIST entry '{entry}'. "
+                "Must be an exact full lowercase ASCII email address (no wildcards or bare domains)."
+            )
+        result.append(entry)
+    return result
+
+
+BETA_EMAIL_ALLOWLIST = parse_beta_email_allowlist(os.getenv('BETA_EMAIL_ALLOWLIST', ''))
 
 
 def validate_runtime_settings(
