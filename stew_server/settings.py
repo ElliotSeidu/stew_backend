@@ -217,6 +217,7 @@ CORS_EXPOSE_HEADERS = [
     'X-Result-Limit',
     'X-Result-Offset',
     'X-Truncated',
+    'X-Server-Time',
 ]
 
 # ---------------------------------------------------------------------------

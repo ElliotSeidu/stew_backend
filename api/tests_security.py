@@ -5318,6 +5318,20 @@ class CancelVsCancelRefundRacePostgresTests(TransactionTestCase):
                 self.assertEqual(mock_post.call_count, 1)
 
 
+class ServerTimeHeaderTests(TestCase):
+    def test_x_server_time_header_present_and_cors_exposed(self):
+        from datetime import datetime
+        from django.conf import settings
+        self.assertIn('X-Server-Time', settings.CORS_EXPOSE_HEADERS)
+        res = self.client.get('/api/orders/policy/')
+        self.assertEqual(res.status_code, 200)
+        hdr = res.headers.get('X-Server-Time')
+        self.assertTrue(hdr)
+        parsed = datetime.fromisoformat(hdr.replace('Z', '+00:00'))
+        self.assertIsNotNone(parsed.tzinfo)
+
+
+
 
 
 

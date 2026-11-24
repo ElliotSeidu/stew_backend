@@ -197,6 +197,7 @@ class SecurityHeadersMiddleware:
         ):
             response['Cache-Control'] = 'no-store, private'
             response['Pragma'] = 'no-cache'
+        response['X-Server-Time'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         return response
 
 
