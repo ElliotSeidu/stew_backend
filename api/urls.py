@@ -2,6 +2,9 @@ from django.urls import path
 from api import views
 
 urlpatterns = [
+    # Health
+    path('health/', views.health_view, name='health'),
+
     # Auth
     path('auth/register/', views.register_view, name='register'),
     path('auth/verify-email/', views.verify_email_view, name='verify_email'),

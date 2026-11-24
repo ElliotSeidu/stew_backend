@@ -5331,6 +5331,32 @@ class ServerTimeHeaderTests(TestCase):
         self.assertIsNotNone(parsed.tzinfo)
 
 
+class HealthAndProxyTests(TestCase):
+    def test_health_endpoint_unauthenticated_no_db_writes_minimal_json(self):
+        with self.assertNumQueries(0):
+            res = self.client.get('/api/health/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {'status': 'ok'})
+
+    def test_wsgi_application_importable(self):
+        from stew_server.wsgi import application
+        self.assertTrue(callable(application))
+
+    @override_settings(
+        DEBUG=False,
+        SECURE_SSL_REDIRECT=True,
+        SECURE_PROXY_SSL_HEADER=('HTTP_X_FORWARDED_PROTO', 'https'),
+    )
+    def test_secure_proxy_ssl_header_prevents_redirect_loop(self):
+        res_http = self.client.get('/api/health/')
+        self.assertEqual(res_http.status_code, 301)
+
+        res_https = self.client.get('/api/health/', HTTP_X_FORWARDED_PROTO='https')
+        self.assertEqual(res_https.status_code, 200)
+        self.assertEqual(res_https.json(), {'status': 'ok'})
+
+
+
 
 
 
