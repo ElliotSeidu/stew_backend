@@ -5483,6 +5483,67 @@ class HealthEndpointTests(TestCase):
         self.assertEqual(res.json(), {'status': 'ok'})
 
 
+class PromoteAdminCommandTests(TestCase):
+    def setUp(self):
+        from api.models import User
+        self.active_verified = User.objects.create_user(
+            email='promo_ok@st.knust.edu.gh',
+            full_name='Promo Ok',
+            phone='0243334455',
+            reference_id='20980001',
+            verified=True,
+            is_active=True,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        self.unverified = User.objects.create_user(
+            email='promo_unv@st.knust.edu.gh',
+            full_name='Promo Unverified',
+            phone='0243334456',
+            reference_id='20980002',
+            verified=False,
+            is_active=True,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        self.inactive = User.objects.create_user(
+            email='promo_inact@st.knust.edu.gh',
+            full_name='Promo Inactive',
+            phone='0243334457',
+            reference_id='20980003',
+            verified=True,
+            is_active=False,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+
+    def test_promote_admin_promotes_verified_active_user_and_rejects_others(self):
+        from io import StringIO
+        from django.core.management import call_command, CommandError
+        from api.models import AuditEntry
+
+        for bad_email in ('nobody@st.knust.edu.gh', self.unverified.email, self.inactive.email):
+            with self.assertRaises(CommandError):
+                call_command('promote_admin', '--email', bad_email)
+
+        out = StringIO()
+        call_command('promote_admin', '--email', self.active_verified.email, stdout=out)
+        self.active_verified.refresh_from_db()
+        self.assertTrue(self.active_verified.is_admin)
+        self.assertEqual(self.active_verified.role, 'admin')
+        self.assertIn('promo_ok@st.knust.edu.gh', out.getvalue())
+        self.assertTrue(
+            AuditEntry.objects.filter(
+                action='admin_promoted',
+                entity_id=str(self.active_verified.id),
+            ).exists()
+        )
+
+
+
 
 
 
