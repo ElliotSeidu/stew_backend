@@ -5612,6 +5612,56 @@ class PromoteAdminCommandTests(TestCase):
                 call_command('promote_admin', email=email)
 
 
+class ClientIpDiagnosticsTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.student = User.objects.create_user(
+            email='diag.student@st.knust.edu.gh', password='Password123',
+            full_name='Diag Student', reference_id='20992001', phone='0243000001',
+            hall='Unity Hall', verified=True, role='customer', account_type='customer',
+        )
+        cls.vendor_user = User.objects.create_user(
+            email='diag.vendor@st.knust.edu.gh', password='Password123',
+            full_name='Diag Vendor', reference_id='20992002', phone='0243000002',
+            hall='Unity Hall', verified=True, role='vendor', account_type='vendor', is_vendor=True,
+        )
+        cls.staff_non_admin = User.objects.create_user(
+            email='diag.staff@st.knust.edu.gh', password='Password123',
+            full_name='Diag Staff', reference_id='20992003', phone='0243000003',
+            hall='Unity Hall', verified=True, role='admin', is_staff=True, is_admin=False,
+        )
+        cls.admin = User.objects.create_user(
+            email='diag.admin@st.knust.edu.gh', password='Password123',
+            full_name='Diag Admin', reference_id='20992004', phone='0243000004',
+            hall='Unity Hall', verified=True, role='admin', is_admin=True,
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_non_admins_receive_401_or_403(self):
+        self.assertEqual(self.client.get('/api/admin/diagnostics/client-ip/').status_code, 401)
+        for u in (self.student, self.vendor_user, self.staff_non_admin):
+            self.client.force_authenticate(user=u)
+            res = self.client.get('/api/admin/diagnostics/client-ip/')
+            self.assertEqual(res.status_code, 403, f'Expected 403 for {u.email}, got {res.status_code}')
+
+    @override_settings(TRUSTED_PROXY_COUNT=1)
+    def test_admin_receives_only_xff_count_and_computed_client_ip(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get(
+            '/api/admin/diagnostics/client-ip/',
+            HTTP_X_FORWARDED_FOR='203.0.113.10, 198.51.100.2',
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(set(data.keys()), {'xffCount', 'clientIp'})
+        self.assertEqual(data['xffCount'], 2)
+        self.assertEqual(data['clientIp'], '198.51.100.2')
+        self.assertNotIn('203.0.113.10', res.content.decode('utf-8'))
+
+
+
 
 
 

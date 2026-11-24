@@ -3149,3 +3149,21 @@ def admin_refunds_attention_view(request):
 def health_view(request):
     """Unauthenticated liveness probe for Render; performs zero DB queries."""
     return Response({'status': 'ok'})
+
+
+# TEMPORARY DIAGNOSTIC ENDPOINT — REMOVE BEFORE REAL LAUNCH.
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAdminUser])
+def admin_client_ip_diagnostics_view(request):
+    """
+    TEMPORARY DIAGNOSTIC ENDPOINT — REMOVE BEFORE REAL LAUNCH.
+    Returns only the X-Forwarded-For entry count and computed client IP (no raw header values)
+    so operators can verify TRUSTED_PROXY_COUNT behind Render's reverse proxy.
+    """
+    raw_xff = str((getattr(request, 'META', None) or {}).get('HTTP_X_FORWARDED_FOR') or '').strip()
+    xff_count = len([p for p in raw_xff.split(',') if p.strip()]) if raw_xff else 0
+    return Response({
+        'xffCount': xff_count,
+        'clientIp': get_client_ip(request),
+    })

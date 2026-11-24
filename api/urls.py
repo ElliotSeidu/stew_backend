@@ -72,6 +72,8 @@ urlpatterns = [
     path('admin/conversations/<str:pk>/messages/', views.admin_conversation_messages_view, name='admin_conversation_messages'),
     path('admin/security/failed-logins/', views.admin_failed_logins_view, name='admin_failed_logins'),
     path('admin/refunds/attention/', views.admin_refunds_attention_view, name='admin_refunds_attention'),
+    # TEMPORARY DIAGNOSTIC ENDPOINT — REMOVE BEFORE REAL LAUNCH.
+    path('admin/diagnostics/client-ip/', views.admin_client_ip_diagnostics_view, name='admin_diagnostics_client_ip'),
 
     # Notifications & Analytics
     path('notifications/subscribe/', views.subscribe_push_view, name='subscribe_push'),
