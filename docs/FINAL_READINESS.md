@@ -159,9 +159,11 @@ The following items cannot be verified from a local/WSL2 test environment and MU
      - `TRUSTED_PROXY_COUNT=0` (set to exact number of trusted reverse proxy hops — e.g. `1` behind a single nginx/Cloudflare hop — per `docs/PRODUCTION_PREFLIGHT.md` Section 7; never trust arbitrary client `X-Forwarded-For` prefixes)
      - `THROTTLE_ANON_PER_MIN=1000`, `THROTTLE_USER_PER_MIN=120` (global DRF throttle ceilings per minute)
      - `JWT_ACCESS_TOKEN_LIFETIME_HOURS=12` (current default `12`; tighten to `1`–`4` once refresh token rotation is deployed)
+     - `FAILED_LOGIN_RETENTION_DAYS=30`, `FAILED_LOGIN_IP_HOURLY_CAP=60`
+     - `CUSTOMER_CANCEL_UNTIL_PREP_STARTS=True`, `CUSTOMER_CANCEL_WINDOW_SECONDS=120`, `CUSTOMER_PAID_CANCELS_PER_DAY=5`
      - Optional initial admin bootstrap only: `SEED_ADMIN_PASSWORD=<12+ char strong secret>`
 5. **Apply Database Migrations on Copy First, Then Production**
-   - Run `python manage.py migrate --noinput` against the staging copy first (`0003_decimal_money_and_constraints`, `0004_ratelimitbucket`). Confirm exit `0` and `makemigrations --check --dry-run`.
+   - Run `python manage.py migrate --noinput` against the staging copy first (`0003_decimal_money_and_constraints`, `0004_ratelimitbucket`, `0005_failed_login_event`). Confirm exit `0` and `makemigrations --check --dry-run`.
    - Put production API in brief maintenance mode, take a pre-migration delta backup, and run `python manage.py migrate --noinput` against production.
 6. **Deploy Backend & Reverse Proxy**
    - Run `python manage.py check --deploy --fail-level WARNING` in the production container/host (must report `0` issues).
@@ -180,10 +182,12 @@ The following items cannot be verified from a local/WSL2 test environment and MU
    - Deploy `dist/` over HTTPS cleanly. Verify `dist/` does not include source maps (`.map`) or mock shortcuts (`MOCK === false`).
 8. **Run Post-Deploy Smoke Tests**
    - Verify HTTPS redirect, TLS cert, `GET /api/vendors/` `200`, `POST /api/payments/initialize/` unauthenticated returns `401`, non-KNUST email signup returns `400`, `/admin/` rejects non-`is_admin` staff accounts, and run Section 6 dry-run on staging / live micro-order.
-9. **Schedule Daily Rate-Limit & Revocation Cleanup Cron**
-   - Configure a daily cron / systemd timer (see `docs/PRODUCTION_PREFLIGHT.md` Section 8):
-     `15 3 * * * cd /srv/stew/stew_backend && ./venv/bin/python manage.py cleanup_rate_limits --batch-size 1000 --margin-seconds 3600`
-     to delete expired `RateLimitBucket` rows and expired JWT `jti` revocation entries in batches (`--batch-size 1000`, retaining revocations beyond `JWT_ACCESS_TOKEN_LIFETIME_HOURS + margin_seconds`).
+9. **Schedule Daily Cleanup, Unpaid Expiry & Refund Retry Crons**
+   - Configure daily/periodic crons / systemd timers (see `docs/PRODUCTION_PREFLIGHT.md` Sections 8–11):
+     - `15 3 * * * cd /srv/stew/stew_backend && ./venv/bin/python manage.py cleanup_rate_limits --batch-size 1000 --margin-seconds 3600` (purges expired `RateLimitBucket` rows, expired JWT `jti` revocations, and `FailedLoginEvent` rows older than `FAILED_LOGIN_RETENTION_DAYS=30`)
+     - `*/5 * * * * cd /srv/stew/stew_backend && ./venv/bin/python manage.py expire_unpaid_orders`
+     - `*/15 * * * * cd /srv/stew/stew_backend && ./venv/bin/python manage.py retry_pending_refunds`
+     - One-time / audit check: `python manage.py purge_identity_documents` (dry-run) / `--apply`.
 
 ### Incident Runbook: Compromised or Lost Admin Account
 

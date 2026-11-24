@@ -394,3 +394,17 @@ python manage.py purge_identity_documents
 # Apply redaction/deletion after reviewing dry-run counts:
 python manage.py purge_identity_documents --apply
 ```
+
+---
+
+## 11. Automatic Paystack Refunds & Retry (`retry_pending_refunds`)
+
+- **Settings / Defaults:**
+  - `FAILED_LOGIN_RETENTION_DAYS=30`, `FAILED_LOGIN_IP_HOURLY_CAP=60`
+  - `CUSTOMER_CANCEL_UNTIL_PREP_STARTS=True`, `CUSTOMER_CANCEL_WINDOW_SECONDS=120`, `CUSTOMER_PAID_CANCELS_PER_DAY=5`
+- **Paystack Webhook Events:** Register `https://api.<your-domain>/api/payments/webhook/` to receive `charge.success` plus all 5 refund events:
+  `refund.pending`, `refund.processing`, `refund.processed`, `refund.failed`, `refund.needs_attention`.
+- **Scheduled Retry Cron:** Retry stuck `refund_pending` orders (outside payout batches) every 15 minutes:
+```bash
+*/15 * * * * cd /app/stew_backend && /app/venv/bin/python manage.py retry_pending_refunds >> /var/log/stew-retry-refunds.log 2>&1
+```
