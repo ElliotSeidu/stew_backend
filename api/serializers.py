@@ -236,12 +236,21 @@ class OrderSerializer(serializers.ModelSerializer):
             if (obj.payment_status == 'pending' and not obj.cancelled_at and not obj.paid_at and obj.created_at)
             else None
         )
+        ref_meta = (obj.prep_at or {}).get('_refund') if isinstance(obj.prep_at, dict) else None
+        refund_info = None
+        if isinstance(ref_meta, dict):
+            refund_info = {
+                'status': ref_meta.get('status') or ('processed' if obj.payment_status == 'refunded' else 'pending'),
+                'needsAttention': bool(ref_meta.get('needsAttention')),
+                'updatedAt': ref_meta.get('updatedAt'),
+            }
         return {
             'status': obj.payment_status,
             'provider': obj.payment_provider,
             'reference': obj.payment_reference if self._is_owner_or_admin(obj) else None,
             'paidAt': paid_at_ts,
             'expiresAt': expires_at_ts,
+            'refund': refund_info,
         }
 
     def get_settlement(self, obj):

@@ -5036,6 +5036,289 @@ class CancelVsPrepRacePostgresTests(TransactionTestCase):
             self.assertEqual(order.prep_stage, 'preparing')
 
 
+class PaystackRefundTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from django.utils import timezone
+        from api.models import User, Vendor, Meal, Order
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+        self.customer = User.objects.create_user(
+            email='cust_ref@st.knust.edu.gh',
+            full_name='Refund Customer',
+            phone='0245556677',
+            reference_id='20950001',
+            verified=True,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        self.vendor_user = User.objects.create_user(
+            email='vend_ref@st.knust.edu.gh',
+            full_name='Refund Vendor',
+            phone='0556667788',
+            reference_id='20950002',
+            verified=True,
+            role='vendor',
+            is_vendor=True,
+            account_type='vendor',
+            password='Password123',
+        )
+        self.admin = User.objects.create_user(
+            email='admin_ref@st.knust.edu.gh',
+            full_name='Refund Admin',
+            phone='0200000005',
+            reference_id='20950003',
+            verified=True,
+            role='admin',
+            account_type='customer',
+            is_admin=True,
+            password='Password123',
+        )
+        self.vendor = Vendor.objects.create(
+            id='v_ref1',
+            user=self.vendor_user,
+            name='Refund Kitchen',
+            hall='Unity Hall',
+            active=True,
+            open=True,
+        )
+        self.meal = Meal.objects.create(
+            id='m_ref1',
+            vendor=self.vendor,
+            name='Fufu',
+            price=Decimal('50.00'),
+            on=True,
+            left=10,
+        )
+        self.order = Order.objects.create(
+            id='STW-REF1',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+            area='Unity Hall',
+            pickup_day='Today',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'qty': 1, 'price': 50.0}],
+            subtotal=Decimal('50.00'),
+            fee=Decimal('2.50'),
+            total=Decimal('52.50'),
+            payment_status='paid',
+            payment_reference='PSK-REF-100',
+            paid_at=timezone.now(),
+            prep_stage='accepted',
+        )
+
+    def test_customer_cancel_triggers_paystack_refund_for_full_amount(self):
+        from unittest.mock import patch, MagicMock
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'status': True,
+            'data': {'id': 901, 'status': 'pending', 'transaction': {'reference': 'PSK-REF-100'}},
+        }
+
+        with self.settings(PAYSTACK_SECRET_KEY='sk_test_mock_key'):
+            with patch('api.views.http_requests.post', return_value=mock_resp) as mock_post:
+                self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+                res = self.client.post(f'/api/orders/{self.order.id}/cancel/')
+                self.assertEqual(res.status_code, 200)
+                self.assertEqual(res.data['payment']['status'], 'refund_pending')
+                self.assertTrue(mock_post.called)
+                call_kwargs = mock_post.call_args.kwargs
+                self.assertEqual(call_kwargs['json']['transaction'], 'PSK-REF-100')
+                self.assertEqual(call_kwargs['json']['amount'], 5250)
+
+    def test_409_duplicate_refund_reconciles_via_get_and_payout_batch_blocks(self):
+        from unittest.mock import patch, MagicMock
+        from decimal import Decimal
+        from django.utils import timezone
+        from api.models import Order
+
+        post_409 = MagicMock()
+        post_409.status_code = 409
+        post_409.json.return_value = {'status': False, 'message': 'Duplicate refund'}
+
+        get_ok = MagicMock()
+        get_ok.status_code = 200
+        get_ok.json.return_value = {
+            'status': True,
+            'data': [{'id': 902, 'status': 'processed', 'transaction_reference': 'PSK-REF-100'}],
+        }
+
+        with self.settings(PAYSTACK_SECRET_KEY='sk_test_mock_key'):
+            with patch('api.views.http_requests.post', return_value=post_409):
+                with patch('api.views.http_requests.get', return_value=get_ok):
+                    self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.vendor_user)}')
+                    res = self.client.post(f'/api/orders/{self.order.id}/cancel/')
+                    self.assertEqual(res.status_code, 200)
+                    self.assertEqual(res.data['payment']['status'], 'refunded')
+
+        # Payout batch order refuses refund
+        batched = Order.objects.create(
+            id='STW-REF-BAT',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+            area='Unity Hall',
+            pickup_day='Today',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': self.meal.id, 'name': self.meal.name, 'qty': 1, 'price': 50.0}],
+            subtotal=Decimal('50.00'),
+            fee=Decimal('2.50'),
+            total=Decimal('52.50'),
+            payment_status='released',
+            payment_reference='PSK-REF-BAT',
+            paid_at=timezone.now(),
+            payout_batch_id='PAY-999',
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.admin)}')
+        bat_res = self.client.post(f'/api/orders/{batched.id}/cancel/')
+        self.assertIn(bat_res.status_code, (400, 409))
+
+    def test_refund_webhooks_attention_endpoint_and_retry_command(self):
+        import hmac, hashlib, json
+        from io import StringIO
+        from unittest.mock import patch, MagicMock
+        from django.core.management import call_command
+
+        self.order.payment_status = 'refund_pending'
+        self.order.cancelled_at = self.order.paid_at
+        self.order.save(update_fields=['payment_status', 'cancelled_at'])
+
+        secret = 'sk_test_webhook_secret'
+        for evt, expected_status in [
+            ('refund.pending', 'refund_pending'),
+            ('refund.processing', 'refund_pending'),
+            ('refund.failed', 'refund_pending'),
+            ('refund.needs_attention', 'refund_pending'),
+            ('refund.processed', 'refunded'),
+        ]:
+            payload = json.dumps({
+                'event': evt,
+                'data': {'id': 777, 'transaction_reference': 'PSK-REF-100', 'status': evt.split('.')[1]},
+            }).encode('utf-8')
+            sig = hmac.new(secret.encode('utf-8'), payload, hashlib.sha512).hexdigest()
+            with self.settings(PAYSTACK_SECRET_KEY=secret):
+                w_res = self.client.post(
+                    '/api/payments/webhook/',
+                    data=payload,
+                    content_type='application/json',
+                    HTTP_X_PAYSTACK_SIGNATURE=sig,
+                )
+                self.assertEqual(w_res.status_code, 200)
+                self.order.refresh_from_db()
+                self.assertEqual(self.order.payment_status, expected_status)
+
+        # Admin attention endpoint (non-admin -> 403, admin -> 200)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.customer)}')
+        self.assertEqual(self.client.get('/api/admin/refunds/attention/').status_code, 403)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.admin)}')
+        att_res = self.client.get('/api/admin/refunds/attention/')
+        self.assertEqual(att_res.status_code, 200)
+
+        # retry_pending_refunds retries refund_pending orders
+        self.order.payment_status = 'refund_pending'
+        self.order.save(update_fields=['payment_status'])
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'status': True, 'data': {'id': 903, 'status': 'processed'}}
+        with self.settings(PAYSTACK_SECRET_KEY='sk_test_mock_key'):
+            with patch('api.views.http_requests.post', return_value=mock_resp):
+                out = StringIO()
+                call_command('retry_pending_refunds', stdout=out)
+                self.order.refresh_from_db()
+                self.assertEqual(self.order.payment_status, 'refunded')
+
+
+@_skip_unless(_db_conn.vendor == 'postgresql', 'PostgreSQL row-lock concurrency test')
+class CancelVsCancelRefundRacePostgresTests(TransactionTestCase):
+    def test_concurrent_cancels_trigger_at_most_one_paystack_refund(self):
+        import threading
+        from decimal import Decimal
+        from unittest.mock import patch, MagicMock
+        from django.db import connections
+        from django.utils import timezone
+        from api.models import User, Vendor, Meal, Order
+
+        _RATE_LIMIT_CACHE.clear()
+        cust = User.objects.create_user(
+            email='pg_ref_cust@st.knust.edu.gh',
+            full_name='PG Ref Cust',
+            phone='0242223344',
+            reference_id='20960001',
+            verified=True,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        vend_u = User.objects.create_user(
+            email='pg_ref_vend@st.knust.edu.gh',
+            full_name='PG Ref Vend',
+            phone='0552223344',
+            reference_id='20960002',
+            verified=True,
+            role='vendor',
+            is_vendor=True,
+            account_type='vendor',
+            password='Password123',
+        )
+        vend = Vendor.objects.create(id='v_pgref', user=vend_u, name='PG Ref Kitchen', hall='Unity', active=True, open=True)
+        Meal.objects.create(id='m_pgref', vendor=vend, name='Banku', price=Decimal('30.00'), on=True, left=10)
+        order = Order.objects.create(
+            id='STW-PGREF-1',
+            customer=cust,
+            customer_name=cust.full_name,
+            email=cust.email,
+            phone=cust.phone,
+            area='Unity',
+            pickup_day='Today',
+            vendor=vend,
+            vendor_name=vend.name,
+            lines=[{'mealId': 'm_pgref', 'name': 'Banku', 'qty': 1, 'price': 30.0}],
+            subtotal=Decimal('30.00'),
+            fee=Decimal('1.50'),
+            total=Decimal('31.50'),
+            payment_status='paid',
+            payment_reference='PSK-PGREF-1',
+            paid_at=timezone.now(),
+            prep_stage='accepted',
+        )
+
+        cust_tok = generate_jwt_token(cust)
+        vend_tok = generate_jwt_token(vend_u)
+        barrier = threading.Barrier(2)
+        results = {}
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'status': True, 'data': {'id': 999, 'status': 'pending'}}
+
+        with self.settings(PAYSTACK_SECRET_KEY='sk_test_mock_key'):
+            with patch('api.views.http_requests.post', return_value=mock_resp) as mock_post:
+                def run_cancel(label, tok):
+                    try:
+                        c = APIClient()
+                        c.credentials(HTTP_AUTHORIZATION=f'Bearer {tok}')
+                        barrier.wait(timeout=5)
+                        r = c.post(f'/api/orders/{order.id}/cancel/')
+                        results[label] = r.status_code
+                    finally:
+                        connections.close_all()
+
+                t1 = threading.Thread(target=run_cancel, args=('cust', cust_tok))
+                t2 = threading.Thread(target=run_cancel, args=('vend', vend_tok))
+                t1.start(); t2.start()
+                t1.join(); t2.join()
+
+                self.assertEqual(sorted(results.values()), [200, 400])
+                self.assertEqual(mock_post.call_count, 1)
+
+
+
 
 
 

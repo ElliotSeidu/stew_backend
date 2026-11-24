@@ -1364,12 +1364,21 @@ def cancel_order_view(request, pk):
                             status=status.HTTP_400_BAD_REQUEST,
                         )
 
+        if order.payout_batch_id:
+            return Response(
+                {'message': 'This order is already in a payout batch and cannot be refunded automatically.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         order.cancelled_at = dj_timezone.now()
         was_paid = order.payment_status in ['paid', 'released']
-        if was_paid and order.settlement_status == 'released':
-            order.payment_status = 'refund_pending'
-        elif was_paid:
-            order.payment_status = 'refunded'
+        if was_paid:
+            if getattr(settings, 'PAYSTACK_SECRET_KEY', '') and order.payment_reference:
+                order.payment_status = 'refund_pending'
+            elif order.settlement_status == 'released':
+                order.payment_status = 'refund_pending'
+            else:
+                order.payment_status = 'refunded'
         else:
             order.payment_status = 'cancelled'
 
@@ -1377,12 +1386,151 @@ def cancel_order_view(request, pk):
         _restore_order_stock(order)
         record_audit(user.email, 'order_cancelled', 'order', order.id, {'status': 'cancelled'})
 
+    if was_paid and getattr(settings, 'PAYSTACK_SECRET_KEY', '') and order.payment_reference:
+        order = initiate_refund(order.id, reason='order_cancelled', actor_email=user.email)
+
     return Response(OrderSerializer(order, context={'request': request}).data)
 
 
 # ============================================================================
 # PAYSTACK & ESCROW PAYMENTS
 # ============================================================================
+
+def initiate_refund(order_id: str, reason: str, actor_email: str) -> Order:
+    """
+    Initiates a full Paystack refund for a cancelled paid order.
+    Acquires row lock to claim/mark inFlight, releases lock before HTTP call,
+    reconciles 409 duplicates via GET /refund?reference=..., then re-locks to persist.
+    """
+    with transaction.atomic():
+        order = Order.objects.select_for_update().get(id=order_id)
+        if order.payout_batch_id or order.payment_status == 'refunded':
+            return order
+        ref = str(order.payment_reference or '').strip()
+        amount_pesewas = int((Decimal(str(order.total)) * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+        prep_at = dict(order.prep_at or {})
+        refund_meta = dict(prep_at.get('_refund') or {})
+        if refund_meta.get('inFlight'):
+            return order
+        refund_meta.update({
+            'inFlight': True,
+            'reason': reason,
+            'updatedAt': int(dj_timezone.now().timestamp() * 1000),
+        })
+        prep_at['_refund'] = refund_meta
+        order.prep_at = prep_at
+        if order.payment_status in ('paid', 'released'):
+            order.payment_status = 'refund_pending'
+        order.save(update_fields=['payment_status', 'prep_at'])
+
+    secret_key = getattr(settings, 'PAYSTACK_SECRET_KEY', '')
+    new_status = 'refund_pending'
+    ps_refund_status = 'pending'
+    refund_id = refund_meta.get('refundId')
+    needs_attention = False
+    last_error = ''
+
+    if not secret_key:
+        if _paystack_mock_allowed():
+            new_status = 'refunded'
+            ps_refund_status = 'processed'
+        else:
+            needs_attention = True
+            last_error = 'PAYSTACK_SECRET_KEY not configured'
+    elif not ref:
+        needs_attention = True
+        last_error = 'Missing payment reference'
+    else:
+        headers = {'Authorization': f'Bearer {secret_key}'}
+        try:
+            resp = http_requests.post(
+                'https://api.paystack.co/refund',
+                headers=headers,
+                json={
+                    'transaction': ref,
+                    'amount': amount_pesewas,
+                    'merchant_note': f'STEW refund for {order_id} ({reason})',
+                },
+                timeout=15,
+            )
+            if resp.status_code == 409:
+                get_resp = http_requests.get(
+                    f'https://api.paystack.co/refund?reference={ref}',
+                    headers=headers,
+                    timeout=15,
+                )
+                gdata = get_resp.json() if get_resp.ok else {}
+                rec = gdata.get('data')
+                if isinstance(rec, list):
+                    rec = rec[0] if rec else {}
+                if isinstance(rec, dict):
+                    refund_id = rec.get('id') or refund_id
+                    ps_refund_status = str(rec.get('status') or 'pending').lower()
+            elif resp.status_code in (200, 201):
+                pdata = resp.json()
+                rec = pdata.get('data') if isinstance(pdata, dict) else {}
+                if isinstance(rec, dict):
+                    refund_id = rec.get('id') or refund_id
+                    ps_refund_status = str(rec.get('status') or 'pending').lower()
+            else:
+                needs_attention = True
+                ps_refund_status = 'failed'
+                last_error = f'Paystack HTTP {resp.status_code}'
+        except (http_requests.RequestException, ValueError) as exc:
+            needs_attention = True
+            ps_refund_status = 'failed'
+            last_error = str(exc)[:200]
+
+        if ps_refund_status == 'processed':
+            new_status = 'refunded'
+            needs_attention = False
+        elif ps_refund_status in ('failed', 'needs_attention'):
+            new_status = 'refund_pending'
+            needs_attention = True
+
+    with transaction.atomic():
+        order = Order.objects.select_for_update().get(id=order_id)
+        if order.payment_status != 'refunded':
+            order.payment_status = new_status
+        prep_at = dict(order.prep_at or {})
+        meta = dict(prep_at.get('_refund') or {})
+        meta.update({
+            'inFlight': False,
+            'reason': reason,
+            'status': ps_refund_status,
+            'refundId': refund_id,
+            'needsAttention': needs_attention,
+            'lastError': last_error,
+            'updatedAt': int(dj_timezone.now().timestamp() * 1000),
+        })
+        prep_at['_refund'] = meta
+        order.prep_at = prep_at
+        order.save(update_fields=['payment_status', 'prep_at'])
+        record_audit(
+            actor_email,
+            'refund_initiated',
+            'order',
+            order.id,
+            {'reason': reason, 'paymentStatus': order.payment_status, 'refundStatus': ps_refund_status},
+        )
+        cust_email = order.email
+        order_total = order.total
+
+    if cust_email:
+        try:
+            send_mail(
+                subject=f'STEW refund update for order {order_id}',
+                message=(
+                    f'Your refund for order {order_id} (GHS {order_total:.2f}) is now {ps_refund_status}. '
+                    'Refunds may take up to 10 business days to appear on your MoMo or card.'
+                ),
+                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@stew.local'),
+                recipient_list=[cust_email],
+                fail_silently=True,
+            )
+        except Exception:
+            pass
+    return order
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
@@ -1758,6 +1906,50 @@ def paystack_webhook_view(request):
                     ok, _, _ = _paystack_verify(reference, order)
                     if ok:
                         _mark_order_paid(order, 'paystack_webhook', reference)
+    elif str(payload.get('event') or '') in (
+        'refund.pending',
+        'refund.processing',
+        'refund.processed',
+        'refund.failed',
+        'refund.needs_attention',
+    ):
+        ev_name = str(payload.get('event'))
+        ev_data = payload.get('data') or {}
+        if isinstance(ev_data, dict):
+            tx_obj = ev_data.get('transaction')
+            tx_ref = str(
+                ev_data.get('transaction_reference')
+                or (tx_obj.get('reference') if isinstance(tx_obj, dict) else '')
+                or ''
+            ).strip()
+            if tx_ref:
+                with transaction.atomic():
+                    order = Order.objects.select_for_update().filter(payment_reference=tx_ref).first()
+                    if order and not order.payout_batch_id:
+                        prep_at = dict(order.prep_at or {})
+                        meta = dict(prep_at.get('_refund') or {})
+                        ps_status = ev_name.split('.', 1)[1]
+                        meta.update({
+                            'inFlight': False,
+                            'status': ps_status,
+                            'refundId': ev_data.get('id') or meta.get('refundId'),
+                            'needsAttention': ev_name in ('refund.failed', 'refund.needs_attention'),
+                            'updatedAt': int(dj_timezone.now().timestamp() * 1000),
+                        })
+                        prep_at['_refund'] = meta
+                        order.prep_at = prep_at
+                        if ev_name == 'refund.processed':
+                            order.payment_status = 'refunded'
+                        elif order.payment_status != 'refunded':
+                            order.payment_status = 'refund_pending'
+                        order.save(update_fields=['payment_status', 'prep_at'])
+                        record_audit(
+                            'paystack_webhook',
+                            f'webhook_{ev_name.replace(".", "_")}',
+                            'order',
+                            order.id,
+                            {'refundStatus': ps_status, 'paymentStatus': order.payment_status},
+                        )
     # Always 200 so Paystack stops retrying once the signature is valid
     return Response({'ok': True})
 
@@ -2530,6 +2722,7 @@ def support_case_resolve_view(request, code):
             return Response({'message': 'Support case not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         order = None
+        refund_order_id = None
         refund_amount = Decimal('0.00')
         if action == 'refund' and case.order:
             order = Order.objects.select_for_update().filter(id=case.order).first()
@@ -2542,10 +2735,14 @@ def support_case_resolve_view(request, code):
                 was_uncollected = not order.collected_at and order.prep_stage != 'collected'
                 order.cancelled_at = now
                 was_paid = order.payment_status in ('paid', 'released')
-                if was_paid and order.settlement_status == 'released':
-                    order.payment_status = 'refund_pending'
-                elif was_paid:
-                    order.payment_status = 'refunded'
+                if was_paid:
+                    if getattr(settings, 'PAYSTACK_SECRET_KEY', '') and order.payment_reference:
+                        order.payment_status = 'refund_pending'
+                        refund_order_id = order.id
+                    elif order.settlement_status == 'released':
+                        order.payment_status = 'refund_pending'
+                    else:
+                        order.payment_status = 'refunded'
                 else:
                     order.payment_status = 'cancelled'
                 order.save(update_fields=['cancelled_at', 'payment_status'])
@@ -2556,6 +2753,8 @@ def support_case_resolve_view(request, code):
                 record_audit(request.user.email, 'case_refund_order_cancelled', 'order', order.id, {'case': case.code})
             elif order and order.payment_status in ('paid', 'released', 'refunded', 'refund_pending'):
                 refund_amount = Decimal(str(order.total)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                if order.payment_status in ('paid', 'released', 'refund_pending') and getattr(settings, 'PAYSTACK_SECRET_KEY', '') and order.payment_reference:
+                    refund_order_id = order.id
         elif case.order:
             order = Order.objects.filter(id=case.order).only('email', 'vendor_name', 'customer_id').first()
 
@@ -2592,6 +2791,8 @@ def support_case_resolve_view(request, code):
             extra=snapshot,
         )
         case.delete()
+    if refund_order_id:
+        initiate_refund(refund_order_id, reason='support_case', actor_email=request.user.email)
     return Response({'ok': True, 'code': code, 'action': action})
 
 
@@ -2916,3 +3117,28 @@ def admin_failed_logins_view(request):
         'hasMore': (offset + len(results)) < total,
         'nextOffset': (offset + len(results)) if (offset + len(results)) < total else None,
     })
+
+
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAdminUser])
+def admin_refunds_attention_view(request):
+    """Admin-only list of orders with pending/failed refunds needing attention."""
+    qs = Order.objects.filter(payment_status='refund_pending').order_by('-created_at')
+    results = []
+    for o in qs[:200]:
+        meta = (o.prep_at or {}).get('_refund') or {}
+        if meta.get('needsAttention') or meta.get('status') in ('failed', 'needs_attention', None, ''):
+            results.append({
+                'orderId': o.id,
+                'customerName': o.customer_name,
+                'vendorName': o.vendor_name,
+                'total': float(o.total),
+                'paymentStatus': o.payment_status,
+                'refundStatus': meta.get('status') or 'pending',
+                'needsAttention': bool(meta.get('needsAttention')),
+                'lastError': meta.get('lastError') or '',
+                'updatedAt': meta.get('updatedAt'),
+                'cancelledAt': int(o.cancelled_at.timestamp() * 1000) if o.cancelled_at else None,
+            })
+    return Response({'results': results, 'count': len(results)})
