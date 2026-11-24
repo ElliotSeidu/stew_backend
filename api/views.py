@@ -2656,3 +2656,88 @@ def analytics_event_view(request):
     }
     AnalyticsEvent.objects.create(event=event, payload=safe_payload)
     return Response({'ok': True})
+
+
+_CONVERSATION_VIEW_REASONS = {'safety', 'fraud', 'dispute', 'security', 'other'}
+
+
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAdminUser])
+def admin_conversations_view(request):
+    """Admin-only paginated list of orders that have chat messages."""
+    qs = Order.objects.exclude(messages=[]).exclude(messages__isnull=True).order_by('-created_at')
+    q = str(request.query_params.get('q') or '').strip()[:100]
+    if q:
+        qs = qs.filter(
+            models.Q(id__icontains=q)
+            | models.Q(customer_name__icontains=q)
+            | models.Q(vendor_name__icontains=q)
+        )
+    try:
+        limit = min(max(int(request.query_params.get('limit', 25)), 1), 100)
+    except (TypeError, ValueError):
+        limit = 25
+    try:
+        offset = max(int(request.query_params.get('offset', 0)), 0)
+    except (TypeError, ValueError):
+        offset = 0
+
+    total = qs.count()
+    rows = qs[offset:offset + limit]
+    results = []
+    for o in rows:
+        msgs = o.messages or []
+        last_at = msgs[-1].get('at') if msgs and isinstance(msgs[-1], dict) else None
+        results.append({
+            'orderId': o.id,
+            'customerName': o.customer_name,
+            'vendorName': o.vendor_name,
+            'paymentStatus': o.payment_status,
+            'prepStage': o.prep_stage,
+            'messageCount': len(msgs),
+            'lastMessageAt': last_at,
+            'createdAt': int(o.created_at.timestamp() * 1000) if o.created_at else None,
+        })
+    return Response({
+        'results': results,
+        'count': total,
+        'hasMore': (offset + len(results)) < total,
+        'nextOffset': (offset + len(results)) if (offset + len(results)) < total else None,
+    })
+
+
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAdminUser])
+def admin_conversation_messages_view(request, pk):
+    """Admin-only audited view of unmasked chat messages for a single order."""
+    if not check_rate_limit(f"admin_conv_view_{request.user.id}", limit=60, window_seconds=60):
+        return Response({'message': 'Too many conversation lookups. Please slow down.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    reason = str(request.query_params.get('reason') or '').strip().lower()
+    if reason not in _CONVERSATION_VIEW_REASONS:
+        return Response(
+            {'message': 'A valid reason is required (safety, fraud, dispute, security, or other).'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        order = Order.objects.get(id=pk)
+    except Order.DoesNotExist:
+        return Response({'message': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    record_audit(
+        request.user.email,
+        'admin_conversation_viewed',
+        'order',
+        order.id,
+        {'reason': reason},
+    )
+    return Response({
+        'orderId': order.id,
+        'customerName': order.customer_name,
+        'vendorName': order.vendor_name,
+        'reason': reason,
+        'messages': list(order.messages or []),
+    })

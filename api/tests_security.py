@@ -4558,6 +4558,134 @@ class PhoneEmailPrivacyTests(TestCase):
         self.assertIn('0241234567', adm_res.data['messages'][-1]['text'])
 
 
+class AdminConversationsTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from django.utils import timezone
+        from api.models import User, Vendor, Order
+        self.client = APIClient()
+        _RATE_LIMIT_CACHE.clear()
+        self.customer = User.objects.create_user(
+            email='cust_conv@st.knust.edu.gh',
+            full_name='Conv Customer',
+            phone='0248887766',
+            reference_id='20910001',
+            verified=True,
+            role='customer',
+            account_type='customer',
+            password='Password123',
+        )
+        self.vendor_user = User.objects.create_user(
+            email='vend_conv@st.knust.edu.gh',
+            full_name='Conv Vendor',
+            phone='0554443322',
+            reference_id='20910002',
+            verified=True,
+            role='vendor',
+            is_vendor=True,
+            account_type='vendor',
+            password='Password123',
+        )
+        self.admin = User.objects.create_user(
+            email='admin_conv@st.knust.edu.gh',
+            full_name='Conv Admin',
+            phone='0200000002',
+            reference_id='20910003',
+            verified=True,
+            role='admin',
+            account_type='customer',
+            is_admin=True,
+            password='Password123',
+        )
+        self.vendor = Vendor.objects.create(
+            id='v_conv1',
+            user=self.vendor_user,
+            name='Conv Kitchen',
+            hall='Unity Hall',
+            active=True,
+            open=True,
+        )
+        self.order_with_msgs = Order.objects.create(
+            id='STW-CONV1',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+            area='Unity Hall',
+            pickup_day='Today',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': 'm1', 'name': 'Waakye', 'qty': 1, 'price': 30.0}],
+            subtotal=Decimal('30.00'),
+            fee=Decimal('1.50'),
+            total=Decimal('31.50'),
+            payment_status='paid',
+            paid_at=timezone.now(),
+            messages=[
+                {'from': 'student', 'text': 'Call 0248887766 at gate', 'at': 1700000000000},
+                {'from': 'vendor', 'text': 'On my way', 'at': 1700000060000},
+            ],
+        )
+        self.order_no_msgs = Order.objects.create(
+            id='STW-CONV2',
+            customer=self.customer,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+            area='Unity Hall',
+            pickup_day='Today',
+            vendor=self.vendor,
+            vendor_name=self.vendor.name,
+            lines=[{'mealId': 'm1', 'name': 'Waakye', 'qty': 1, 'price': 30.0}],
+            subtotal=Decimal('30.00'),
+            fee=Decimal('1.50'),
+            total=Decimal('31.50'),
+            payment_status='paid',
+            paid_at=timezone.now(),
+            messages=[],
+        )
+
+    def test_conversations_list_and_messages_require_admin_and_reason(self):
+        from api.models import AuditEntry
+        for non_admin in (self.customer, self.vendor_user):
+            self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(non_admin)}')
+            self.assertEqual(self.client.get('/api/admin/conversations/').status_code, 403)
+            self.assertEqual(
+                self.client.get(f'/api/admin/conversations/{self.order_with_msgs.id}/messages/?reason=safety').status_code,
+                403,
+            )
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {generate_jwt_token(self.admin)}')
+        list_res = self.client.get('/api/admin/conversations/?q=STW-CONV1')
+        self.assertEqual(list_res.status_code, 200)
+        results = list_res.data.get('results', list_res.data)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['orderId'], 'STW-CONV1')
+
+        # Missing or invalid reason -> 400
+        self.assertEqual(
+            self.client.get(f'/api/admin/conversations/{self.order_with_msgs.id}/messages/').status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.get(f'/api/admin/conversations/{self.order_with_msgs.id}/messages/?reason=curious').status_code,
+            400,
+        )
+
+        # Valid reason -> 200 with unmasked messages + AuditEntry
+        msg_res = self.client.get(f'/api/admin/conversations/{self.order_with_msgs.id}/messages/?reason=dispute')
+        self.assertEqual(msg_res.status_code, 200)
+        self.assertEqual(len(msg_res.data['messages']), 2)
+        self.assertIn('0248887766', msg_res.data['messages'][0]['text'])
+        audit = AuditEntry.objects.filter(
+            action='admin_conversation_viewed',
+            entity_id=self.order_with_msgs.id,
+        ).first()
+        self.assertIsNotNone(audit)
+        self.assertEqual(audit.extra.get('reason'), 'dispute')
+
+
+
 
 
 

@@ -64,6 +64,8 @@ urlpatterns = [
     path('admin/users/', views.admin_users_view, name='admin_users'),
     path('admin/users/<str:pk>/', views.admin_user_detail_view, name='admin_user_detail'),
     path('admin/audit/', views.admin_audit_view, name='admin_audit'),
+    path('admin/conversations/', views.admin_conversations_view, name='admin_conversations'),
+    path('admin/conversations/<str:pk>/messages/', views.admin_conversation_messages_view, name='admin_conversation_messages'),
 
     # Notifications & Analytics
     path('notifications/subscribe/', views.subscribe_push_view, name='subscribe_push'),
