@@ -5346,14 +5346,36 @@ class HealthAndProxyTests(TestCase):
         DEBUG=False,
         SECURE_SSL_REDIRECT=True,
         SECURE_PROXY_SSL_HEADER=('HTTP_X_FORWARDED_PROTO', 'https'),
+        SECURE_REDIRECT_EXEMPT=[r'^api/health/$'],
     )
     def test_secure_proxy_ssl_header_prevents_redirect_loop(self):
-        res_http = self.client.get('/api/health/')
+        # Health check is exempt from SSL redirect so Render's probe gets 200 directly
+        res_health_http = self.client.get('/api/health/')
+        self.assertEqual(res_health_http.status_code, 200)
+        self.assertEqual(res_health_http.json(), {'status': 'ok'})
+
+        # Normal endpoints redirect to HTTPS when X-Forwarded-Proto is absent, and return 200 when 'https'
+        res_http = self.client.get('/api/orders/policy/')
         self.assertEqual(res_http.status_code, 301)
 
-        res_https = self.client.get('/api/health/', HTTP_X_FORWARDED_PROTO='https')
+        res_https = self.client.get('/api/orders/policy/', HTTP_X_FORWARDED_PROTO='https')
         self.assertEqual(res_https.status_code, 200)
-        self.assertEqual(res_https.json(), {'status': 'ok'})
+
+    def test_settings_exempts_health_from_ssl_redirect_when_debug_false(self):
+        # Verify production-style settings module includes ^api/health/$ in SECURE_REDIRECT_EXEMPT
+        from pathlib import Path
+        settings_src = (Path(__file__).resolve().parent.parent / 'stew_server' / 'settings.py').read_text(encoding='utf-8')
+        self.assertIn("SECURE_REDIRECT_EXEMPT", settings_src)
+        self.assertIn(r"^api/health/$", settings_src)
+
+    def test_health_endpoint_exempt_from_throttling(self):
+        from django.core.cache import cache
+        from api.security import ConfigurableAnonRateThrottle
+        cache.clear()
+        with patch.object(ConfigurableAnonRateThrottle, 'get_rate', return_value='1/min'):
+            for _ in range(5):
+                res = self.client.get('/api/health/')
+                self.assertEqual(res.status_code, 200)
 
 
 class AppEnvAndStartupGuardsTests(TestCase):

@@ -16,7 +16,7 @@ from django.db.models.functions import ExtractWeekDay
 from django.utils import timezone as dj_timezone
 from django.utils.html import strip_tags
 from rest_framework import status
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
@@ -3146,8 +3146,9 @@ def admin_refunds_attention_view(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@throttle_classes([])
 def health_view(request):
-    """Unauthenticated liveness probe for Render; performs zero DB queries."""
+    """Unauthenticated liveness probe for Render; performs zero DB queries and is throttle-exempt."""
     return Response({'status': 'ok'})
 
 
