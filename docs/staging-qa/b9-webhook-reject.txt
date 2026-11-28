@@ -1,0 +1,3 @@
+=== B9: WEBHOOK SIGNATURE REJECTION ===
+POST /api/payments/webhook/ (unsigned) -> 400 {"ok":false}
+POST /api/payments/webhook/ (bad sig)  -> 401 {"ok":false}

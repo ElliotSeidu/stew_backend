@@ -1,0 +1,13 @@
+=== B3: CORS ===
+ORIGIN=https://stewfrontend.vercel.app
+  OPTIONS=200 ACAO='https://stewfrontend.vercel.app' ACAC='true'
+  GET=200 ACAO='https://stewfrontend.vercel.app' ACAC='true'
+ORIGIN=https://evil.example
+  OPTIONS=200 ACAO=None ACAC=None
+  GET=200 ACAO=None ACAC=None
+ORIGIN=http://localhost:9999
+  OPTIONS=200 ACAO=None ACAC=None
+  GET=200 ACAO=None ACAC=None
+ORIGIN=https://stewfrontend-git-preview-test.vercel.app
+  OPTIONS=200 ACAO=None ACAC=None
+  GET=200 ACAO=None ACAC=None

@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import stew_server.settings
+  File "C:\Users\ellio\Desktop\fullstack\stew_fullstack\stew_backend\stew_server\settings.py", line 389, in <module>
+    validate_runtime_settings(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        app_env=APP_ENV,
+        ^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        beta_email_allowlist=BETA_EMAIL_ALLOWLIST,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\ellio\Desktop\fullstack\stew_fullstack\stew_backend\stew_server\settings.py", line 384, in validate_runtime_settings
+    raise RuntimeError("APP_ENV=staging refuses live Paystack secret keys (sk_live_*). Use sk_test_*.")
+RuntimeError: APP_ENV=staging refuses live Paystack secret keys (sk_live_*). Use sk_test_*.

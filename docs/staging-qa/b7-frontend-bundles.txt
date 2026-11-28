@@ -1,0 +1,5 @@
+=== B7: LIVE FRONTEND BUNDLES & SOURCEMAPS ===
+noindex_meta_present=False
+http_mixed_content_in_html=[]
+js_bundles=['/assets/index-0dHfOSup.js']
+/assets/index-0dHfOSup.js: status=200 cache='public, max-age=0, must-revalidate' map_status=404 sk_hits=0 pk_test_prefixes=0 priv_key=False api_urls=[]

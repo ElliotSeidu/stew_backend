@@ -1,0 +1,17 @@
+=== B5: UNAUTH & EMAIL FILTER ===
+POST /api/auth/register/ (outsider@gmail.com) -> 400 {"errors":{"email":{"email":"Only valid KNUST student emails (@st.knust.edu.gh) are allowed entry. No external email services (e.g. Gmail, Yahoo, etc.) are permitted."}},"message":"Invalid registration details."}
+POST /api/auth/register/ (test+alias@st.knust.edu.gh) -> 400 {"errors":{"email":{"email":"Only valid KNUST student emails (@st.knust.edu.gh) are allowed entry. No external email services (e.g. Gmail, Yahoo, etc.) are permitted."}},"message":"Invalid registration details."}
+POST /api/auth/register/ (TEST+ALIAS@ST.KNUST.EDU.GH) -> 400 {"errors":{"email":{"email":"Only valid KNUST student emails (@st.knust.edu.gh) are allowed entry. No external email services (e.g. Gmail, Yahoo, etc.) are permitted."}},"message":"Invalid registration details."}
+GET /api/auth/me/ (unauth) -> 401 {"message":"Authentication credentials were not provided.","detail":"Authentication credentials were not provided.","errors":{}}
+GET /api/orders/ (unauth) -> 401 {"message":"Authentication credentials were not provided.","detail":"Authentication credentials were not provided.","errors":{}}
+GET /api/admin/users/ (unauth) -> 401 {"message":"Authentication credentials were not provided.","detail":"Authentication credentials were not provided.","errors":{}}
+GET /api/admin/diagnostics/client-ip/ (unauth) -> 404 
+<!doctype html>
+<html lang="en">
+<head>
+  <title>Not Found</title>
+</head>
+<body>
+  <h1>Not Found</h1><p>The requested resource was not found on this server.</p>
+</body>
+</html>

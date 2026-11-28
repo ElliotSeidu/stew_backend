@@ -1,0 +1,17 @@
+[Unit]
+Description=STEW Django Gunicorn Application Server
+After=network.target postgresql.service
+
+[Service]
+User=stew
+Group=stew
+WorkingDirectory=/opt/stew/stew_backend
+EnvironmentFile=/etc/stew/stew.env
+ExecStart=/opt/stew/stew_backend/venv/bin/gunicorn stew_server.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 60 --access-logfile /var/log/stew/gunicorn-access.log --error-logfile /var/log/stew/gunicorn-error.log
+Restart=always
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

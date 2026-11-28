@@ -1,0 +1,17 @@
+=== B4: ERROR HANDLING & CONFIG ===
+GET /api/nonexistent-404/ -> 404 
+<!doctype html>
+<html lang="en">
+<head>
+  <title>Not Found</title>
+</head>
+<body>
+  <h1>Not Found</h1><p>The requested resource was not found on this server.</p>
+</body>
+</html>
+
+POST malformed JSON /api/auth/login/ -> 400 {"message":"JSON parse error - Expecting property name enclosed in double quotes: line 1 column 2 (char 1)","detail":"JSON parse error - Expecting property name enclosed in double quotes: line 1 column 2 (char 1)","errors":{}}
+DELETE /api/health/ -> 405 {"message":"Method \"DELETE\" not allowed.","detail":"Method \"DELETE\" not allowed.","errors":{}}
+GET /admin/ -> 302 Location=/admin/login/?next=/admin/
+POST /api/payments/initialize/ (unauth) -> 401 {"message":"Authentication credentials were not provided.","detail":"Authentication credentials were not provided.","errors":{}}
+GET /api/health/ -> 200 {"status":"ok"}

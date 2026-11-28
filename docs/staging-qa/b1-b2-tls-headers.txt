@@ -1,0 +1,113 @@
+COLD_START_SECONDS: 39.25
+WARM_HEALTH: 200 {"status":"ok"}
+
+=== B1: HTTP -> HTTPS & TLS ===
+HTTP API: 301 Location=https://stew-backend.onrender.com/api/health/
+HTTP WEB: 308 Location=https://stewfrontend.vercel.app/
+TLS CERTS: {
+  "stew-backend.onrender.com": {
+    "subject": {
+      "commonName": "onrender.com"
+    },
+    "issuer": {
+      "countryName": "US",
+      "organizationName": "Google Trust Services",
+      "commonName": "WE1"
+    },
+    "notAfter": "Feb 17 22:53:10 2027 GMT"
+  },
+  "stewfrontend.vercel.app": {
+    "subject": {
+      "commonName": "*.vercel.app"
+    },
+    "issuer": {
+      "countryName": "US",
+      "organizationName": "Google Trust Services",
+      "commonName": "WR1"
+    },
+    "notAfter": "Jan 29 11:46:09 2027 GMT"
+  }
+}
+
+=== B2: API HEADERS (/api/health/) ===
+{
+  "Date": "Sat, 28 Nov 2026 08:16:59 GMT",
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Connection": "keep-alive",
+  "allow": "GET, OPTIONS",
+  "cf-cache-status": "DYNAMIC",
+  "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+  "cross-origin-opener-policy": "same-origin",
+  "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "rndr-id": "5d0de09a-d128-46a6",
+  "Server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "vary": "origin, Accept-Encoding",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "x-render-origin-server": "gunicorn",
+  "x-server-time": "2026-11-28T08:16:59.541751Z",
+  "CF-RAY": "a617ee153d5b7104-AMS",
+  "alt-svc": "h3=\":443\"; ma=86400"
+}
+
+=== B2: API HEADERS (/api/orders/policy/) ===
+{
+  "Date": "Sat, 28 Nov 2026 08:17:03 GMT",
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Connection": "keep-alive",
+  "allow": "GET, OPTIONS",
+  "Cache-Control": "no-store, private",
+  "cf-cache-status": "DYNAMIC",
+  "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+  "cross-origin-opener-policy": "same-origin",
+  "permissions-policy": "geolocation=(), camera=(), microphone=(), payment=()",
+  "pragma": "no-cache",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "rndr-id": "c37abcb8-4e52-4759",
+  "Server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "vary": "origin, Accept-Encoding",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "x-render-origin-server": "gunicorn",
+  "x-server-time": "2026-11-28T08:17:03.418891Z",
+  "Content-Encoding": "gzip",
+  "CF-RAY": "a617ef1c39677104-AMS",
+  "alt-svc": "h3=\":443\"; ma=86400"
+}
+
+=== B2: FRONTEND HEADERS (/) ===
+{
+  "Access-Control-Allow-Origin": "*",
+  "Age": "147279",
+  "Cache-Control": "public, max-age=0, must-revalidate",
+  "Content-Disposition": "inline",
+  "Content-Encoding": "gzip",
+  "Content-Type": "text/html; charset=utf-8",
+  "Date": "Sat, 28 Nov 2026 08:17:04 GMT",
+  "Etag": "W/\"1a3b397fd5661ec91867bc3798116969\"",
+  "Last-Modified": "Thu, 26 Nov 2026 15:22:25 GMT",
+  "Server": "Vercel",
+  "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+  "X-Vercel-Cache": "HIT",
+  "X-Vercel-Id": "fra1::ggv8k-1795853824806-3b1b0b9eb9a0",
+  "Transfer-Encoding": "chunked"
+}
+
+=== B2: FRONTEND HEADERS (/sw.js) ===
+{
+  "Cache-Control": "public, max-age=0, must-revalidate",
+  "Content-Type": "application/javascript; charset=utf-8",
+  "X-Robots-Tag": null
+}
+
+=== B2: FRONTEND HEADERS (/manifest.webmanifest) ===
+{
+  "Cache-Control": "public, max-age=0, must-revalidate",
+  "Content-Type": "application/manifest+json; charset=utf-8",
+  "X-Robots-Tag": null
+}

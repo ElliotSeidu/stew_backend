@@ -1,0 +1,13 @@
+/var/log/stew/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 stew stew
+    sharedscripts
+    postrotate
+        systemctl reload stew-gunicorn >/dev/null 2>&1 || true
+    endscript
+}
