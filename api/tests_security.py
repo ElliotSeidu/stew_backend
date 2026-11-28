@@ -5683,6 +5683,98 @@ class ClientIpDiagnosticsTests(TestCase):
         self.assertNotIn('203.0.113.10', res.content.decode('utf-8'))
 
 
+class ResetTestDataCommandTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email='reset.admin@st.knust.edu.gh', password='Password123',
+            full_name='Reset Admin', reference_id='20993001', phone='0244000001',
+            hall='Unity Hall', verified=True, role='admin', is_admin=True,
+        )
+        self.student = User.objects.create_user(
+            email='reset.student@st.knust.edu.gh', password='Password123',
+            full_name='Reset Student', reference_id='20993002', phone='0244000002',
+            hall='Unity Hall', verified=True, role='customer', account_type='customer',
+        )
+        self.vendor_user = User.objects.create_user(
+            email='reset.vendor@st.knust.edu.gh', password='Password123',
+            full_name='Reset Vendor', reference_id='20993003', phone='0244000003',
+            hall='Unity Hall', verified=True, role='vendor', account_type='vendor', is_vendor=True,
+        )
+        self.vendor = Vendor.objects.create(
+            id='v_reset_1', user=self.vendor_user, name='Reset Kitchen', hall='Unity Hall', open=True, active=True,
+        )
+        self.meal = Meal.objects.create(
+            id='m_reset_1', vendor=self.vendor, name='Reset Rice', price=Decimal('15.00'), left=5, on=True,
+        )
+        self.order = Order.objects.create(
+            id='STW-RESET-1', customer=self.student, email=self.student.email,
+            vendor=self.vendor, vendor_name=self.vendor.name,
+            subtotal=Decimal('15.00'), fee=Decimal('1.00'), total=Decimal('16.00'),
+        )
+        from api.models import AuditEntry, FailedLoginEvent, RateLimitBucket
+        AuditEntry.objects.create(
+            id='aud_admin_keep', actor=self.admin.email, action='admin_promoted',
+            entity_type='user', entity_id=self.admin.id, extra={},
+        )
+        AuditEntry.objects.create(
+            id='aud_non_admin_del', actor=self.student.email, action='account_registered',
+            entity_type='user', entity_id=self.student.id, extra={},
+        )
+        FailedLoginEvent.objects.create(email_attempted=self.student.email, reason='invalid_credentials')
+        RateLimitBucket.objects.create(key='rl_reset_1', count=1, window_start=timezone.now())
+
+    def test_refuses_non_staging_app_env(self):
+        from django.core.management import CommandError, call_command
+        for env_name in ('production', 'development'):
+            with override_settings(APP_ENV=env_name):
+                with self.assertRaises(CommandError):
+                    call_command('reset_test_data')
+
+    @override_settings(APP_ENV='staging')
+    def test_dry_run_default_and_requires_both_apply_and_i_understand(self):
+        from io import StringIO
+        from django.core.management import CommandError, call_command
+
+        out = StringIO()
+        call_command('reset_test_data', stdout=out)
+        self.assertIn('DRY RUN', out.getvalue())
+        self.assertTrue(User.objects.filter(id=self.student.id).exists())
+        self.assertTrue(Order.objects.filter(id=self.order.id).exists())
+
+        with self.assertRaises(CommandError):
+            call_command('reset_test_data', apply=True)
+        with self.assertRaises(CommandError):
+            call_command('reset_test_data', i_understand=True)
+        self.assertTrue(Order.objects.filter(id=self.order.id).exists())
+
+    @override_settings(APP_ENV='staging')
+    def test_apply_deletes_test_data_and_preserves_admins_and_admin_audits(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from api.models import AuditEntry, FailedLoginEvent, RateLimitBucket
+
+        out = StringIO()
+        call_command('reset_test_data', apply=True, i_understand=True, stdout=out)
+        output = out.getvalue()
+        self.assertNotIn(self.student.email, output)
+        self.assertNotIn(self.admin.email, output)
+
+        # Admin and admin audit history preserved; non-admin data wiped
+        self.assertTrue(User.objects.filter(id=self.admin.id).exists())
+        self.assertTrue(AuditEntry.objects.filter(id='aud_admin_keep').exists())
+        self.assertTrue(AuditEntry.objects.filter(action='staging_data_reset').exists())
+
+        self.assertFalse(User.objects.filter(id=self.student.id).exists())
+        self.assertFalse(User.objects.filter(id=self.vendor_user.id).exists())
+        self.assertFalse(Vendor.objects.exists())
+        self.assertFalse(Meal.objects.exists())
+        self.assertFalse(Order.objects.exists())
+        self.assertFalse(AuditEntry.objects.filter(id='aud_non_admin_del').exists())
+        self.assertFalse(FailedLoginEvent.objects.exists())
+        self.assertFalse(RateLimitBucket.objects.exists())
+
+
+
 
 
 
