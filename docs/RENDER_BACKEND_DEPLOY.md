@@ -2,8 +2,11 @@
 
 ## 1. Render Service Configuration
 - **Repository / Branch:** `ElliotSeidu/stew_backend` → branch `staging`
+- **Live Staging URLs:**
+  - Backend API: `https://stew-backend.onrender.com`
+  - Frontend (Vercel, production branch `staging`): `https://stewfrontend.vercel.app`
 - **Region:** `frankfurt` (closest Render region to Ghana; keep PostgreSQL and Web Service in the same region)
-- **Runtime:** Python `3.13.1` (`free` plan for both PostgreSQL and Web Service)
+- **Runtime:** Python `3.13.17` (match the Python 3.13.x version the test suite ran on; `free` plan for both PostgreSQL and Web Service)
 - **WSGI Module:** `stew_server.wsgi:application`
 - **Build Command:**
   ```bash
@@ -13,10 +16,16 @@
   ```bash
   python manage.py migrate --noinput && gunicorn stew_server.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120
   ```
-- **Health Check Path:** `/api/health/` (unauthenticated, 0 DB queries, returns `{"status": "ok"}`)
+- **Health Check Path:** `/api/health/` (unauthenticated, 0 DB queries, throttle-exempt, SSL-redirect-exempt via `SECURE_REDIRECT_EXEMPT`, returns `{"status": "ok"}`)
 
 > [!IMPORTANT]
 > Free Render web services spin down after ~15 minutes of inactivity (first wake-up takes ~60s) and have no interactive shell or cron jobs. Free Render PostgreSQL databases expire **30 days** after creation (14-day grace period).
+
+### Verified Deployment Lessons
+- **`DB_NAME`:** Must be the database name Render generated (from the Render PostgreSQL dashboard), **not** the Render service name.
+- **`ALLOWED_HOSTS`:** Must contain exact hostnames (`stew-backend.onrender.com`) with **no** `https://` scheme and **no** `*` wildcard (otherwise Render's health check receives `400`).
+- **`CORS_ALLOWED_ORIGINS` & `CSRF_TRUSTED_ORIGINS`:** Must be exact origins (`https://stewfrontend.vercel.app`) with **no** trailing slash.
+- **`VITE_API_URL`:** Baked into the frontend bundle at **build time**; Vercel's production branch must be `staging`.
 
 ---
 
@@ -24,11 +33,11 @@
 
 | Name | Example | Who sets it | Secret? |
 |---|---|---|---|
-| `PYTHON_VERSION` | `3.13.1` | Render env | No |
+| `PYTHON_VERSION` | `3.13.17` | Render env | No |
 | `APP_ENV` | `staging` | Render env | No |
 | `DEBUG` | `False` | Render env | No |
 | `SECRET_KEY` | `<64+ char random urlsafe string>` | Human (`secrets.token_urlsafe(64)`) | **Yes** |
-| `ALLOWED_HOSTS` | `<your-api>.onrender.com` | Render env | No |
+| `ALLOWED_HOSTS` | `stew-backend.onrender.com` | Render env | No |
 | `CORS_ALLOWED_ORIGINS` | `https://stewfrontend.vercel.app` | Render env | No |
 | `CSRF_TRUSTED_ORIGINS` | `https://stewfrontend.vercel.app` | Render env | No |
 | `DB_ENGINE` | `postgresql` | Render env | No |
@@ -66,7 +75,7 @@
 1. Open the Paystack Dashboard and switch to **Test Mode**.
 2. Go to **Settings → API Keys & Webhooks → Test Webhook URL** and set:
    ```text
-   https://<your-render-service>.onrender.com/api/payments/webhook/
+   https://stew-backend.onrender.com/api/payments/webhook/
    ```
 3. Enable events:
    - `charge.success`
@@ -109,11 +118,18 @@ Run from the same PowerShell session configured in Section 4 (for `retry_pending
 | `.\venv\Scripts\python.exe manage.py expire_unpaid_orders` | Releases reserved `Meal.left` stock from abandoned unpaid checkouts (`> UNPAID_ORDER_TTL_MINUTES`). | Every 15–30 minutes during active friend testing, and at the end of each session. |
 | `.\venv\Scripts\python.exe manage.py retry_pending_refunds` | Retries `refund_pending` orders outside payout batches against Paystack TEST API. | Every 15–30 minutes during active testing, and after each session. |
 | `.\venv\Scripts\python.exe manage.py cleanup_rate_limits --batch-size 1000 --margin-seconds 3600` | Prunes expired `RateLimitBucket` rows, expired JWT revocations, and `FailedLoginEvent` rows older than `FAILED_LOGIN_RETENTION_DAYS` (30 days). | Daily (or after each testing day). |
+| `.\venv\Scripts\python.exe manage.py reset_test_data` | Staging-only dry-run (add `--apply --i-understand` to wipe non-admin test data while preserving `is_admin=True` accounts and admin audit history). | Between friend-testing rounds only. |
 
 ---
 
 ## 6. Determining `TRUSTED_PROXY_COUNT` (Temporary Diagnostics Endpoint)
 A temporary admin-only endpoint `GET /api/admin/diagnostics/client-ip/` is included on `staging` (returns `{"xffCount": <int>, "clientIp": "<ip>"}` with no raw header values):
-1. Log in as the promoted admin and `GET https://<your-render-service>.onrender.com/api/admin/diagnostics/client-ip/` with `Authorization: Bearer <admin-jwt>`.
+1. Log in as the promoted admin and `GET https://stew-backend.onrender.com/api/admin/diagnostics/client-ip/` with `Authorization: Bearer <admin-jwt>`.
 2. Check `xffCount` (from a normal browser/curl request with no extra `X-Forwarded-For` header). On Render, if `xffCount` is `2` (for example, edge + internal proxy), set `TRUSTED_PROXY_COUNT=1` or `2` depending on which hop appends the real client IP, then confirm `clientIp` matches your public IP (e.g. via `https://api.ipify.org`).
 3. **Remove `GET /api/admin/diagnostics/client-ip/` before real production launch.**
+
+---
+
+## 7. Render-Specific Coupling Audit (A9)
+- **`stew_backend`:** Zero `RENDER_*`, `onrender.com`, or `vercel.app` references in Python source code (`settings.py`, `api/*`). All hosts, origins, DB settings, and proxy counts come from environment variables documented in `.env.example`.
+- **`stew` (frontend):** Zero `RENDER_*`, `onrender.com`, or `vercel.app` references in `src/` or `vite.config.js`. The only host-pattern reference is `https://*.onrender.com` in `vercel.json`'s `Content-Security-Policy-Report-Only` `connect-src` directive (Vercel-specific header file, updated when moving the API host).
