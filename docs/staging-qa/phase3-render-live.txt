@@ -1,0 +1,2 @@
+GET /api/health/ (0.98s) -> 200 {"status":"ok"}
+GET /api/admin/diagnostics/client-ip/ (unauth) -> 401 {"message":"Authentication credentials were not provided.","detail":"Authentication credentials were not provided.","errors":{}}

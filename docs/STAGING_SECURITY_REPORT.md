@@ -35,8 +35,8 @@
 
 | ID | Severity | Where Seen | Evidence | Status |
 |---|---|---|---|---|
-| **STG-01** | **High** | `https://stewfrontend.vercel.app` | `b1-b2-tls-headers.txt`, `b7-frontend-bundles.txt` — Live Vercel site is serving an old `main` build (`Last-Modified: Thu, 26 Nov 2026`, `index-0dHfOSup.js`, missing `vercel.json` headers, missing `noindex`, `api_urls=[]`). | **Open — Needs Human** (Set Vercel Production Branch to `staging`, set `VITE_API_URL=https://stew-backend.onrender.com/api`, `VITE_APP_ENV=staging`, `VITE_PAYSTACK_PUBLIC_KEY=pk_test_...`, and redeploy) |
-| **STG-02** | **Medium** | `https://stew-backend.onrender.com` | `b5-auth-unauth.txt` — `/api/admin/diagnostics/client-ip/` returned `404` because Render is running an older commit than `staging`. | **Open — Needs Human** (Trigger Render deploy of `staging` once pushed) |
+| **STG-01** | **High** | `https://stewfrontend.vercel.app` | `b1-b2-tls-headers.txt`, `b7-frontend-bundles.txt` — Live Vercel site is serving an old `main` build (`Last-Modified: Thu, 26 Nov 2026`, `index-0dHfOSup.js`, missing `vercel.json` headers, missing `noindex`, `api_urls=[]`). Production Branch updated to `staging`, but `VITE_PAYSTACK_PUBLIC_KEY`, `VITE_API_URL`, and `VITE_APP_ENV` are missing in Vercel Environment Variables. | **Open — Needs Human** (Add `VITE_PAYSTACK_PUBLIC_KEY=pk_test_...` in Vercel, then trigger `staging` redeploy with Build Cache OFF) |
+| **STG-02** | **Medium** | `https://stew-backend.onrender.com` | `b5-auth-unauth.txt` (before) → `phase3-render-live.txt` (after): Render redeployed `staging` (`f366f39`, `dep-dc59a049v7es739mocvg`); `GET /api/health/` → `200` and `GET /api/admin/diagnostics/client-ip/` (unauth) → `401`. | **Closed** |
 | **STG-03** | **Low** | `https://stew-backend.onrender.com/api/nonexistent-404/` | `b4-errors-config.txt` — Unmatched `/api/*` paths return Django's default HTML 404 page instead of JSON (no stack trace or secrets leaked). | Accepted / low |
 
 ---
